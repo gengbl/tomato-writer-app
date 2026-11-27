@@ -26,7 +26,7 @@ npm run build:exe         # 备用控制台版单文件 exe（bun，需 /tmp/ope
 ### 发布（仅在用户明确要求时）
 
 - 仓库内容：源码 + `使用说明.md`（入库，因为 GitHub Release 附件要用它）+ 工作流；不上传 `node_modules/`、`dist/`、`dist-app/`、`使用说明.pdf`、`*.zip`、`.env`
-- Release 附件 = `tomato-writer-app-<版本>.exe` + `tomato-writer-app-<版本>.AppImage` + `使用说明.md`（见 `build.yml` 的 `release.files`）
+- Release 附件 = `tomato-writer-app-<版本>.exe` + `tomato-writer-app-<版本>.AppImage` + `tomato-writer-guide.md`（由仓库根的 `使用说明.md` 复制而来，**附件名必须 ASCII**：实测中文附件名会被 GitHub 弄成 `default.md`）；release job 必须 `actions/checkout`，否则工作区里没有 `使用说明.md`
 - 流程：改 `package.json` 版本（同步 `package-lock.json`）→ commit → `git push origin main`（不触发 CI）→ `git tag vX.Y.Z && git push origin vX.Y.Z`（这一步才触发 GitHub 构建 + 建 Release）
 - 本机推送需绕过坏掉的隧道：仓库已配 `core.sshCommand = "ssh -o ProxyCommand=none"`，手动推送用 `GIT_SSH_COMMAND="ssh -o ProxyCommand=none" git push ...`
 

@@ -66,10 +66,11 @@ jobs:
           pattern: tomato-writer-app-*
           merge-multiple: true
           path: out
+      # 中文文件名会被 GitHub Release 附件名弄坏（实测 使用说明.md → default.md），改成 ASCII 名
+      - name: 准备使用说明附件（ASCII 文件名）
+        run: cp 使用说明.md out/tomato-writer-guide.md
       - uses: softprops/action-gh-release@v3
         with:
-          # 安装包 + 使用说明（说明文档入库，随 Release 一起发布）
-          files: |
-            out/*
-            使用说明.md
+          # 安装包 + 使用说明（说明文档入库，随 Release 一起发布，附件名为 ASCII）
+          files: out/*
           generate_release_notes: true
