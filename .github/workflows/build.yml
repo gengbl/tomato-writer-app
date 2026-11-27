@@ -31,7 +31,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: tomato-writer-app-windows
-          path: dist-app/tomato-writer-app.exe
+          path: dist-app/*.exe
 
   build-linux:
     runs-on: ubuntu-latest

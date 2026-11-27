@@ -1,6 +1,6 @@
 {
   "name": "tomato-writer-web",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
@@ -45,14 +45,14 @@
           ]
         }
       ],
-      "artifactName": "tomato-writer-app.exe"
+      "artifactName": "tomato-writer-app-${version}.exe"
     },
     "linux": {
       "target": [
         "AppImage"
       ],
       "category": "Utility",
-      "artifactName": "tomato-writer-app-${version}-${arch}.AppImage"
+      "artifactName": "tomato-writer-app-${version}.AppImage"
     }
   }
 }
