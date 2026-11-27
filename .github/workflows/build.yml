@@ -20,7 +20,14 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx electron-builder --win portable --x64
+      - run: npx electron-builder --win portable --x64 --publish never
+      - name: 失败时把构建日志摘要暴露到 Step Summary（免登录可查）
+        if: failure()
+        shell: bash
+        run: |
+          LOG=$(ls -t ~/AppData/Local/electron-builder/Log/*.log ~/.log/electron-builder/*.log 2>/dev/null | head -1)
+          [ -n "$LOG" ] && tail -c 4000 "$LOG" >> "$GITHUB_STEP_SUMMARY"
+          echo "Windows 构建失败，日志尾部见上方" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: tomato-writer-app-windows
@@ -35,7 +42,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx electron-builder --linux AppImage
+      - run: npx electron-builder --linux AppImage --publish never
+      - name: 失败时把构建日志摘要暴露到 Step Summary（免登录可查）
+        if: failure()
+        run: |
+          LOG=$(ls -t ~/.log/electron-builder/*.log 2>/dev/null | head -1)
+          [ -n "$LOG" ] && tail -c 4000 "$LOG" >> "$GITHUB_STEP_SUMMARY"
+          echo "Linux 构建失败，日志尾部见上方" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: tomato-writer-app-linux
