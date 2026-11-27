@@ -59,6 +59,8 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      # 必须 checkout：release job 之前没有工作区文件，导致 Release 附件里缺「使用说明.md」
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           pattern: tomato-writer-app-*
