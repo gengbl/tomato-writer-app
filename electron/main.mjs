@@ -169,7 +169,7 @@ if (!app.requestSingleInstanceLock()) {
             console.log(`[selftest] login: phase=${st.phase} error=${st.error || ""} diag=${st.diag || ""}`);
             if (st.phase === "done") console.log(`[selftest] result=${JSON.stringify(st.result)}`);
             const s2 = await (await fetch(`${base}/api/status`)).json();
-            console.log(`[selftest] status: cookieOk=${s2.cookieOk} token=${s2.tokenPrefix}`);
+            console.log(`[selftest] status: cookieOk=${s2.cookieOk} tokenOk=${s2.tokenOk}`);
             // 退出流程验证：登录后按钮应变成「退出番茄账号」→ 点击退出 → 状态回到未登录 → 前端自动重新打开登录页
             await new Promise((r) => setTimeout(r, 1000)); // 等前端轮询刷新按钮形态
             const btns = await mainWin.webContents.executeJavaScript(
@@ -180,8 +180,8 @@ if (!app.requestSingleInstanceLock()) {
             const s3 = await (await fetch(`${base}/api/status`)).json();
             const st3 = await (await fetch(`${base}/api/login/status`)).json();
             const cs3 = await loginSession().cookies.get({ domain: "fanqienovel.com" });
-            console.log(`[selftest] 退出后: cookieOk=${s3.cookieOk} token=${s3.tokenPrefix} loginPhase=${st3.phase} 会话Cookie数=${cs3.length}`);
-            app.exit(s2.cookieOk && st.phase === "done" && s3.cookieOk === false && s3.tokenPrefix === null && st3.phase === "waiting" && !cs3.some((c) => c.name.startsWith("sessionid")) ? 0 : 1);
+            console.log(`[selftest] 退出后: cookieOk=${s3.cookieOk} tokenOk=${s3.tokenOk} loginPhase=${st3.phase} 会话Cookie数=${cs3.length}`);
+            app.exit(s2.cookieOk && st.phase === "done" && s3.cookieOk === false && s3.tokenOk === false && st3.phase === "waiting" && !cs3.some((c) => c.name.startsWith("sessionid")) ? 0 : 1);
           } else if (process.env.TOMATO_SELFTEST === "home") {
             // 已登录启动场景：.env 已有 Cookie/Token → 初始化应自动内嵌并显示作家后台首页
             const base = `http://127.0.0.1:${listenPort}`;

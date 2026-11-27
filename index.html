@@ -206,9 +206,9 @@ async function loadStatus() {
   try {
     const s = await api("/api/status");
     $("st-cookie").innerHTML = `<span class="dot ${s.cookieOk ? "ok" : "bad"}"></span>Cookie ${s.cookieOk ? "已配置" : "缺失"}`;
-    $("st-token").innerHTML = `<span class="dot ${s.tokenPrefix ? "ok" : "bad"}"></span>Token <b>${s.tokenPrefix ?? "缺失"}</b>`;
+    $("st-token").innerHTML = `<span class="dot ${s.tokenOk ? "ok" : "bad"}"></span>Token ${s.tokenOk ? "正常" : "缺失"}`;
     // 登录态决定按钮形态：未登录=「登录番茄账号」，已登录=「退出番茄账号」
-    const loggedIn = Boolean(s.cookieOk && s.tokenPrefix);
+    const loggedIn = Boolean(s.cookieOk && s.tokenOk);
     $("btn-login").style.display = loggedIn ? "none" : "";
     $("btn-logout").style.display = loggedIn ? "" : "none";
     const c = s.check || {};
@@ -229,7 +229,7 @@ $("btn-refresh").onclick = async () => {
   $("btn-refresh").disabled = true;
   try {
     const r = await api("/api/refresh-token", { method: "POST" });
-    msg($("msg-status"), `✅ Token 已刷新：${r.token}（有效期约 ${r.hours}h）`, "ok");
+    msg($("msg-status"), `✅ Token 已刷新（有效期约 ${r.hours}h）`, "ok");
     loadStatus();
   } catch (e) { msg($("msg-status"), `❌ ${e.message}`, "err"); }
   $("btn-refresh").disabled = false;
@@ -256,7 +256,7 @@ async function pollLogin() {
     else if (s.phase === "saving") setLoginLine("⏳ 登录成功，正在保存 Cookie 并签发 Token…", "warn");
     else if (s.phase === "done") {
       stopLoginPoll();
-      setLoginLine(`✅ ${s.message}（Token ${s.result.token}，有效期约 ${s.result.hours}h，共收 ${s.result.cookies} 个 Cookie）`, "ok");
+      setLoginLine(`✅ ${s.message}（有效期约 ${s.result.hours}h，共收 ${s.result.cookies} 个 Cookie）`, "ok");
       if (appMode === "app") $("embed-label").textContent = "✅ 登录成功！下方即你的番茄作家后台首页（登录状态已保持，可直接浏览）";
       loadStatus();
       refreshNovelsAfterLogin("登录成功后");
@@ -908,7 +908,7 @@ showTab(1);
     else if (initLogin.phase === "error") setLoginLine(`❌ ${initLogin.error}`, "err");
   }
   // 未登录时自动加载番茄登录页；已登录时自动显示作家后台首页（均为应用版）
-  const loggedIn = st && st.cookieOk && st.tokenPrefix;
+  const loggedIn = st && st.cookieOk && st.tokenOk;
   const idle = !initLogin || initLogin.phase === "idle";
   if (appMode === "app") {
     if (!loggedIn && idle) startLoginFlow();

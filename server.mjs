@@ -190,7 +190,8 @@ async function refreshCsrf() {
   if (!env.TOMATO_COOKIE) throw new Error(".env 缺少 TOMATO_COOKIE");
   const r = await issueCsrf(env.TOMATO_COOKIE);
   saveCsrfToken(r.token);
-  return { token: `${r.token.slice(0, 16)}…`, hours: r.hours, session: r.session };
+  logApp(`[token] CSRF Token 已刷新（有效期约 ${r.hours}h）`); // 只记状态，不记 Token 内容
+  return { ok: true, hours: r.hours }; // 不把 Token 片段返回给界面/日志
 }
 
 // ---------- 番茄登录（弹系统 Chrome 窗口扫码，自动收 Cookie + 签发 Token） ----------
@@ -350,8 +351,8 @@ async function startLogin() {
       // 关键判定：必须出现会话 Cookie sessionid / sessionid_ss（匿名访问只有 ttwid/serial_uuid
       // 等跟踪 Cookie；且实测 issueCsrf 对匿名会话也签发 Token，不能拿「签发成功」当登录依据）
       if (!/sessionid(_ss)?=/.test(cookieStr)) {
-        // 诊断：显示内嵌会话当前拿到的 Cookie 名（若这里没有 sessionid 说明登录页/会话桥接有问题）
-        login.diag = `登录页已加载，会话 Cookie：${cookieStr.split(";").map((s) => s.split("=")[0].trim()).join(", ") || "无"}`;
+        // 诊断：只报 Cookie 数量与是否拿到登录会话，不列出 Cookie 名/值
+        login.diag = `登录页已加载，会话 Cookie ${cookieStr.split(";").length} 个（还没拿到登录会话，请继续扫码）`;
         return;
       }
       loginChecking = true;
@@ -367,10 +368,9 @@ async function startLogin() {
           return;
         }
         finishLogin({
-          token: `${r.token.slice(0, 16)}…`,
+          ok: true,
           hours: r.hours,
-          session: r.session,
-          cookies: cookieStr.split("; ").length,
+          cookies: cookieStr.split("; ").length, // 只报数量，Cookie / Token 内容不进界面与日志
         });
       } catch (e) {
         // 签发失败常见于登录跳转链中 Cookie 尚未写全；记录诊断并继续重试，界面可见
@@ -629,7 +629,8 @@ const server = http.createServer(async (req, res) => {
         }
         json(res, 200, {
           cookieOk: Boolean(env.TOMATO_COOKIE),
-          tokenPrefix: env.TOMATO_CSRF_TOKEN ? `${env.TOMATO_CSRF_TOKEN.slice(0, 16)}…` : null,
+          // 只报状态，不回 Cookie / Token 的任何片段（界面与日志里都不出现凭证内容）
+          tokenOk: Boolean(env.TOMATO_CSRF_TOKEN),
           appMode: globalThis.__LOGIN_DRIVER__ ? "app" : "console", // 应用内窗口版 / 控制台+外部浏览器版
           check,
         });

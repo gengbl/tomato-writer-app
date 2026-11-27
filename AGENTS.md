@@ -39,6 +39,7 @@ npm run build:exe         # 备用控制台版单文件 exe（bun，需 /tmp/ope
   - 独立跑 `node server.mjs`（控制台版/调试）：仓库上级目录 → `/home/fosky/workspace/.env`
 - **`.env` 是扫码登录得到的凭证（Cookie / CSRF Token），绝不能删、不能覆盖**：删了就得重新扫码。现存三处（对应上面三种 ROOT）：`dist-app/.env`、`tomato-writer-app/.env`、`/home/fosky/workspace/.env`。跑 `TOMATO_SELFTEST` 需要登录态时**直接复用现成的 `.env`**，不要往目标目录拷文件（真要补，只允许 `cp -n` 不覆盖已存在的）；测试结束后**不清理** `.env`、`web-state.json`，也不要把它们从 `dist-app/` 里删掉
 - 番茄接口没有公开文档，路径均来自作家后台前端 chunk 逆向；新接口先在 `async-main` chunk 里找 URL 常量再实现
+- **凭证不回显**：界面与日志任何地方都不出现 Cookie / CSRF Token / sessionid 的内容或片段。`GET /api/status` 只返回布尔 `cookieOk` / `tokenOk`（不再有 `tokenPrefix`）；`/api/refresh-token`、登录结果只报 `ok` + 有效期 + Cookie 个数；登录诊断只报 Cookie 个数，不列 Cookie 名
 - 前端调用后端一律走 `api()`；破坏性操作（删除书籍/章节）必须服务端二次校验 + 前端双重确认
 - 状态一致性：登录成功或启动时已登录 → 主动拉「② 我的书籍」（表格 + ④ 目标书籍下拉）；删除 / 新建书籍后所有相关视图联动刷新（书籍表格、目标书籍下拉、合并章节表、封面跳转目标）。自检模式 `TOMATO_SELFTEST=books` 用假 `api()` 验证这条链路
 - 建书界面只留必要字段（书名、频道、签约模式、分类下拉、主要角色、简介）；`activity_id`/`label_list`/封面参数不在界面出现，由 `server.mjs` 补官方默认值
