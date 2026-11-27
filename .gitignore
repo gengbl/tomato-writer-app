@@ -1,0 +1,15 @@
+# 依赖（CI 用 npm ci 安装，不入库）
+node_modules/
+
+# 编译产物与打包成果
+dist/
+dist-app/
+
+# 本地数据与凭证（.env 含登录 Cookie，绝不入库）
+.env
+web-state.json
+
+# 文档资料（使用说明随发布包单独分发）
+使用说明.md
+使用说明.pdf
+*.zip

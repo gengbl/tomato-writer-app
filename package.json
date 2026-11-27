@@ -1,0 +1,57 @@
+{
+  "name": "tomato-writer-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.mjs",
+  "description": "番茄小说本地 Web 发布工具（零依赖 node:http 服务 + 单页界面；登录用 puppeteer-core 驱动系统 Chrome；Electron 版为应用内窗口）",
+  "author": "fosky",
+  "scripts": {
+    "start": "node server.mjs",
+    "app": "electron .",
+    "build:exe": "bun build --compile --target=bun-windows-x64 build/entry.mjs --outfile dist/tomato-writer.exe",
+    "build:linux": "bun build --compile build/entry.mjs --outfile dist/tomato-writer-linux",
+    "build:mac": "bun build --compile --target=bun-darwin-arm64 build/entry.mjs --outfile dist/tomato-writer-mac",
+    "build:app:win": "electron-builder --win portable --x64",
+    "build:app:linux": "electron-builder --linux AppImage",
+    "build:app:mac": "electron-builder --mac"
+  },
+  "dependencies": {
+    "puppeteer-core": "^24.0.0"
+  },
+  "devDependencies": {
+    "electron": "^39.8.10",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "com.fosky.tomatowriter",
+    "productName": "番茄小说发布工具",
+    "directories": {
+      "output": "dist-app"
+    },
+    "files": [
+      "server.mjs",
+      "index.html",
+      "electron/**",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "tomato-writer-app.exe"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Utility"
+    }
+  }
+}

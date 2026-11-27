@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>番茄小说发布工具</title>
+<style>
+  :root {
+    --bg: #14161a; --card: #1d2026; --border: #2c313a; --text: #d7dae0;
+    --dim: #8b93a1; --accent: #e8543f; --ok: #4caf7d; --err: #e05252; --warn: #d9a441;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.6 "PingFang SC", "Microsoft YaHei", sans-serif; padding: 20px 24px 60px; max-width: 1080px; margin-inline: auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--dim); font-size: 12px; margin-bottom: 18px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+  .card h2 .no { background: var(--accent); color: #fff; border-radius: 50%; width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 7px 16px; cursor: pointer; font-size: 13px; }
+  button:hover { filter: brightness(1.1); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  input, select, textarea { background: #12141a; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; font-size: 13px; font-family: inherit; width: 100%; }
+  textarea { resize: vertical; }
+  label { display: block; color: var(--dim); font-size: 12px; margin: 10px 0 4px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 180px; }
+  .status-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--err); }
+  .kv { color: var(--dim); font-size: 12px; }
+  .kv b { color: var(--text); font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: top; }
+  th { color: var(--dim); font-weight: 500; font-size: 12px; }
+  .msg { margin-top: 10px; font-size: 13px; white-space: pre-wrap; word-break: break-all; }
+  .msg.ok { color: var(--ok); } .msg.err { color: var(--err); } .msg.warn { color: var(--warn); }
+  .chapter-edit { margin-top: 6px; }
+  .chapter-edit textarea { min-height: 140px; font-size: 12px; }
+  .hint { color: var(--dim); font-size: 12px; margin-top: 6px; }
+  code { background: #12141a; border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+  .flex-end { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; position: sticky; top: 0; background: var(--bg); padding: 8px 0; z-index: 10; }
+  .tab { background: transparent; border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 7px 14px; cursor: pointer; font-size: 13px; }
+  .tab:hover { filter: brightness(1.25); }
+  .tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+</style>
+</head>
+<body>
+<h1>番茄小说发布工具</h1>
+<div class="sub">本地服务 · 鉴权读自 <code>.env</code>（Cookie + CSRF Token）· 仅监听 127.0.0.1</div>
+
+<div class="tabs" id="tabs">
+  <button class="tab active" data-tab="1">① 登录状态</button>
+  <button class="tab" data-tab="2">② 我的书籍</button>
+  <button class="tab" data-tab="3">③ 创建新书</button>
+  <button class="tab" data-tab="4">④ 加载章节 &amp; 批量发布</button>
+</div>
+
+<!-- ① 状态 -->
+<div class="card" id="card-1">
+  <h2><span class="no">1</span>登录状态</h2>
+  <div class="status-line">
+    <span id="st-cookie"></span>
+    <span id="st-token"></span>
+    <button id="btn-login" class="ghost">🔑 登录番茄账号</button>
+    <button id="btn-logout" class="ghost" style="display:none">🚪 退出番茄账号</button>
+    <button id="btn-login-cancel" class="ghost" style="display:none">取消登录</button>
+    <button id="btn-refresh" class="ghost">刷新 CSRF Token</button>
+    <button id="btn-status" class="ghost">重新检测</button>
+  </div>
+  <div class="hint" id="login-hint">「登录番茄账号」会弹出一个系统 Chrome 窗口（番茄作家后台登录页），扫码登录后自动把 Cookie 与 CSRF Token 存入 .env，无需再手动找浏览器 Cookie。</div>
+  <div class="kv" id="login-line" style="margin-top:8px;display:none;white-space:pre-line"></div>
+  <div id="login-embed" style="display:none;margin-top:10px">
+    <div class="kv" id="embed-label">🔐 请在下方扫码登录，成功后此区域会显示你的作家后台首页</div>
+  </div>
+  <div class="kv" id="st-check" style="margin-top:8px"></div>
+  <div class="msg" id="msg-status"></div>
+</div>
+
+<!-- ② 书籍列表 -->
+<div class="card" id="card-2" style="display:none">
+  <h2><span class="no">2</span>我的书籍</h2>
+  <button id="btn-novels" class="ghost">加载书籍列表</button>
+  <table id="tbl-novels" style="display:none">
+    <thead><tr><th>书名</th><th>book_id</th><th>字数</th><th>状态</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div class="msg" id="msg-novels"></div>
+</div>
+
+<!-- ③ 建书 -->
+<div class="card" id="card-3" style="display:none">
+  <h2><span class="no">3</span>创建新书</h2>
+  <div class="row">
+    <div><label>书名 *</label><input id="bk-name"></div>
+    <div><label>频道</label>
+      <select id="bk-gender"><option value="0">女频</option><option value="1">男频</option></select>
+    </div>
+    <div><label>签约模式（本账号仅支持完本）</label>
+      <select id="bk-sign"><option value="1">完本模式</option><option value="0">连载模式</option></select>
+    </div>
+  </div>
+  <div class="row">
+    <div><label>分类（逗号分隔 category_id：主分类必选且仅 1 个，主题/角色/情节各 ≤2）</label><input id="bk-category"></div>
+    <div><label>主要角色（JSON 数组字符串，签约后不能改）</label><input id="bk-roles"></div>
+  </div>
+  <label>简介（50~200 字）</label>
+  <textarea id="bk-abstract" rows="4"></textarea>
+  <div class="row">
+    <div><label>封面 thumb_uri（默认官方图）</label><input id="bk-thumb"></div>
+    <div><label>is_self_pic</label><input id="bk-selfpic" value="0"></div>
+    <div><label>activity_id</label><input id="bk-activity" value="0"></div>
+    <div><label>label_list（可空）</label><input id="bk-labels"></div>
+  </div>
+  <div class="flex-end">
+    <button id="btn-pending" class="ghost">载入预填参数（最好的她）</button>
+    <button id="btn-create">创建书籍</button>
+  </div>
+  <div class="msg" id="msg-create"></div>
+</div>
+
+<!-- ④ 从书目录加载章节 -->
+<!-- ④ 加载章节 & 批量发布（含番茄端章节核验） -->
+<div class="card" id="card-4" style="display:none">
+  <h2><span class="no">4</span>加载章节 &amp; 批量发布</h2>
+  <label>书目录（支持两种结构，自动识别：① articlewriter 约定 <code>&lt;书名&gt;/第NN章-&lt;标题&gt;/NN-&lt;标题&gt;.md</code>，卷目录自动识别；② 平铺结构 <code>&lt;书名&gt;/01.md、02-标题.txt、第3章 标题.md</code> 一文件一章，md/txt 均可，序号/章节名可来自文件名或正文首行；正文自动转 &lt;p&gt; HTML）</label>
+  <div style="display:flex;gap:8px">
+    <input id="bk-dir" placeholder="输入书目录路径，或点「浏览…」逐级点选（自动回填上次使用的目录）">
+    <button id="btn-browse" class="ghost" style="white-space:nowrap">浏览…</button>
+  </div>
+  <div id="browse-panel" style="display:none;margin-top:10px;border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+    <div class="kv" id="browse-path"></div>
+    <div id="browse-list" style="margin-top:8px;display:flex;flex-direction:column;gap:3px;max-height:260px;overflow:auto"></div>
+    <div class="flex-end">
+      <button id="btn-browse-pick">选为书目录并加载章节</button>
+      <button id="btn-browse-close" class="ghost">关闭</button>
+    </div>
+  </div>
+  <div class="flex-end">
+    <button id="btn-split">加载章节（成功后生成下方章节总表）</button>
+  </div>
+  <div class="msg" id="msg-split"></div>
+
+  <div style="margin-top:18px;border-top:1px solid var(--border);padding-top:14px">
+  <label>发布设置</label>
+  <div class="row">
+    <div><label>目标书籍 *（从账号书籍列表选择，选中后自动加载该书的番茄端章节）</label><select id="pub-book"><option value="">加载中…</option></select></div>
+    <div style="flex:0 0 auto;align-self:flex-end"><button id="btn-pub-books" class="ghost">刷新书籍列表</button></div>
+    <div><label>是否使用AI（如实申报）</label><select id="pub-ai"><option value="2" selected>否（未使用AI）</option><option value="1">是（使用了AI工具）</option></select></div>
+    <div><label>内容检测方法</label><select id="pub-check"><option value="base" selected>仅基础检测（不限次数）</option><option value="full">全面检测（每章限 2 次，有风险将中止）</option></select></div>
+  </div>
+  <div class="kv" id="pub-summary">已勾选 0 章</div>
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px">
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="kv">volume_id（留空 = 默认卷）</span><input id="chk-volume" style="width:150px">
+      <button id="btn-chapters" class="ghost">刷新章节列表</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <button id="btn-publish-all">全书上传（按章节顺序）</button>
+      <button id="btn-publish">发布所选章节（逐章提交，遇错即停）</button>
+    </div>
+  </div>
+  <div class="msg" id="msg-publish"></div>
+  </div>
+
+  <div style="margin-top:18px;border-top:1px solid var(--border);padding-top:14px">
+    <label>章节总表（本地书目录 × 番茄端已上传，按章节号对齐；选中目标书籍后自动加载远端章节，发布/删除成功后自动刷新）</label>
+    <table id="tbl-merged" style="display:none">
+      <thead><tr><th style="width:34px">选</th><th style="width:50px">#</th><th>标题</th><th style="width:170px">状态</th><th style="width:60px">字数</th><th style="width:180px">操作</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="row" id="merged-actions-row" style="display:none;margin-top:8px;gap:8px;flex-wrap:wrap">
+      <button id="btn-minvert" class="ghost">反选</button>
+      <button id="btn-mdel-sel" style="background:#b3372f;color:#fff;border-color:#b3372f">删除所选章节</button>
+      <button id="btn-mdel-all" style="background:#b3372f;color:#fff;border-color:#b3372f">删除所有章节</button>
+      <span class="kv" id="m-selcount">已勾选 0 章</span>
+    </div>
+    <div class="row" id="merged-pager-row" style="display:none;margin-top:6px">
+      <div style="flex:0 0 auto"><label>每页</label><select id="m-pagesize" style="width:110px"><option value="20">20 行</option><option value="50">50 行</option><option value="100">100 行</option></select></div>
+      <div style="flex:0 0 auto;align-self:flex-end"><button id="btn-mprev" class="ghost">上一页</button></div>
+      <div style="flex:0 0 auto;align-self:flex-end"><button id="btn-mnext" class="ghost">下一页</button></div>
+      <div style="flex:1;align-self:flex-end"><span class="kv" id="merged-pager"></span></div>
+    </div>
+    <div class="msg" id="msg-verify"></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+function msg(el, text, cls) { el.textContent = text || ""; el.className = "msg" + (cls ? " " + cls : ""); }
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const j = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+  if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+  return j;
+}
+
+// ① 状态
+let appMode = "console"; // 由 /api/status 的 appMode 字段决定：app=Electron 应用内登录 / console=外部浏览器
+async function loadStatus() {
+  try {
+    const s = await api("/api/status");
+    $("st-cookie").innerHTML = `<span class="dot ${s.cookieOk ? "ok" : "bad"}"></span>Cookie ${s.cookieOk ? "已配置" : "缺失"}`;
+    $("st-token").innerHTML = `<span class="dot ${s.tokenPrefix ? "ok" : "bad"}"></span>Token <b>${s.tokenPrefix ?? "缺失"}</b>`;
+    // 登录态决定按钮形态：未登录=「登录番茄账号」，已登录=「退出番茄账号」
+    const loggedIn = Boolean(s.cookieOk && s.tokenPrefix);
+    $("btn-login").style.display = loggedIn ? "none" : "";
+    $("btn-logout").style.display = loggedIn ? "" : "none";
+    const c = s.check || {};
+    $("st-check").innerHTML = c.error
+      ? `额度预检失败：${c.error}`
+      : `建书额度预检：hit_create_book = <b>${c.hit_create_book ?? "?"}</b>` +
+        (c.hit_create_book ? "（<span style='color:var(--warn)'>今日完本建书额度已用完，需等次日重置</span>）" : "（可建书）");
+    msg($("msg-status"), "");
+    appMode = s.appMode ?? "console";
+    $("login-hint").textContent = appMode === "app"
+      ? "「登录番茄账号」会在本页下方内嵌打开番茄登录页，扫码登录后自动把 Cookie 与 CSRF Token 存入 .env，并显示你的作家后台首页。"
+      : "「登录番茄账号」会弹出一个系统 Chrome 窗口（番茄作家后台登录页），扫码登录后自动把 Cookie 与 CSRF Token 存入 .env，无需再手动找浏览器 Cookie。";
+    return s;
+  } catch (e) { msg($("msg-status"), e.message, "err"); return null; }
+}
+$("btn-status").onclick = loadStatus;
+$("btn-refresh").onclick = async () => {
+  $("btn-refresh").disabled = true;
+  try {
+    const r = await api("/api/refresh-token", { method: "POST" });
+    msg($("msg-status"), `✅ Token 已刷新：${r.token}（有效期约 ${r.hours}h）`, "ok");
+    loadStatus();
+  } catch (e) { msg($("msg-status"), `❌ ${e.message}`, "err"); }
+  $("btn-refresh").disabled = false;
+};
+
+// ① 登录番茄账号（弹系统 Chrome 窗口扫码，服务端轮询登录态、自动收 Cookie + 签发 Token）
+let loginPoll = null;
+function setLoginLine(text, cls) {
+  const el = $("login-line");
+  el.style.display = text ? "" : "none";
+  el.textContent = text || "";
+  el.style.color = cls === "ok" ? "var(--ok)" : cls === "err" ? "var(--err)" : "var(--warn)";
+}
+function stopLoginPoll() {
+  if (loginPoll) clearInterval(loginPoll);
+  loginPoll = null;
+  $("btn-login").disabled = false;
+  $("btn-login-cancel").style.display = "none";
+}
+async function pollLogin() {
+  try {
+    const s = await api("/api/login/status");
+    if (s.phase === "waiting") setLoginLine(`⏳ ${s.message || "等待扫码…"}${s.diag ? "\n" + s.diag : ""}`, "warn");
+    else if (s.phase === "saving") setLoginLine("⏳ 登录成功，正在保存 Cookie 并签发 Token…", "warn");
+    else if (s.phase === "done") {
+      stopLoginPoll();
+      setLoginLine(`✅ ${s.message}（Token ${s.result.token}，有效期约 ${s.result.hours}h，共收 ${s.result.cookies} 个 Cookie）`, "ok");
+      if (appMode === "app") $("embed-label").textContent = "✅ 登录成功！下方即你的番茄作家后台首页（登录状态已保持，可直接浏览）";
+      loadStatus();
+      loadNovels(false).catch(() => {});
+    } else if (s.phase === "error") {
+      stopLoginPoll();
+      setLoginLine(`❌ ${s.error}`, "err");
+      if (appMode === "app") hideLoginEmbed();
+    }
+  } catch { /* 服务暂不可用，下轮再试 */ }
+}
+function startLoginPoll() {
+  stopLoginPoll();
+  loginPoll = setInterval(pollLogin, 2000);
+  pollLogin();
+}
+// 应用内登录（Electron）：登录页内嵌在本卡下方；webview 的 webContents id 上报给服务端驱动登录流程
+function ensureEmbedWebview(labelText) {
+  const box = $("login-embed");
+  box.style.display = "";
+  let w = $("login-webview");
+  if (!w) {
+    w = document.createElement("webview");
+    w.id = "login-webview";
+    w.setAttribute("partition", "persist:tomato-login");
+    w.src = "about:blank"; // 不显式设 src 不会附加（getWebContentsId 一直返回 0）
+    w.style.cssText = "width:100%;height:62vh;min-height:420px;border:1px solid var(--border);border-radius:8px;background:#fff;margin-top:8px";
+    box.appendChild(w);
+  }
+  $("embed-label").textContent = labelText;
+  return w;
+}
+function showLoginEmbed() {
+  return ensureEmbedWebview("🔐 请在下方扫码登录，成功后此区域会显示你的作家后台首页");
+}
+// 已登录（启动时 .env 已有有效登录态）：内嵌页直接显示作家后台首页
+async function showHomeEmbed() {
+  const w = ensureEmbedWebview("✅ 已登录，下方为你的番茄作家后台首页（登录状态已保持）");
+  const id = await waitWebContentsId(w);
+  await api("/api/home/show", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ webContentsId: id }) });
+}
+function hideLoginEmbed() {
+  const w = $("login-webview");
+  if (w) w.remove(); // 移除元素即销毁内嵌页面
+  $("login-embed").style.display = "none";
+}
+async function waitWebContentsId(w) {
+  for (let i = 0; i < 50; i++) {
+    try {
+      const id = w.getWebContentsId();
+      if (id) return id;
+    } catch { /* 尚未附加 */ }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error("登录视图初始化失败");
+}
+async function startLoginFlow() {
+  $("btn-login").disabled = true;
+  $("btn-login-cancel").style.display = "";
+  setLoginLine(appMode === "app" ? "正在打开登录页…" : "正在打开浏览器…", "warn");
+  try {
+    if (appMode === "app") {
+      const w = showLoginEmbed();
+      const id = await waitWebContentsId(w);
+      await api("/api/login/attach", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ webContentsId: id }) });
+    }
+    await api("/api/login/start", { method: "POST" });
+    startLoginPoll();
+  } catch (e) {
+    stopLoginPoll();
+    setLoginLine(`❌ ${e.message}`, "err");
+    if (appMode === "app") hideLoginEmbed();
+  }
+}
+$("btn-login").onclick = startLoginFlow;
+$("btn-logout").onclick = async () => {
+  if (!confirm("确定退出番茄账号？退出后需重新扫码登录。")) return;
+  try {
+    await api("/api/logout", { method: "POST" });
+    setLoginLine("已退出登录。", "warn");
+    await loadStatus();
+    if (appMode === "app") await startLoginFlow(); // 内嵌页回到未登录的登录页
+  } catch (e) {
+    setLoginLine(`❌ 退出失败：${e.message}`, "err");
+  }
+};
+$("btn-login-cancel").onclick = async () => {
+  try { await api("/api/login/cancel", { method: "POST" }); } catch { /* 忽略，轮询会显示最终状态 */ }
+};
+
+// ② 书籍列表（同时同步第 4 步「目标书籍」单选列表）
+let novels = [];
+async function loadNovels(showTable = true) {
+  novels = await api("/api/novels");
+  if (showTable) {
+    const tb = $("tbl-novels").querySelector("tbody");
+    tb.innerHTML = "";
+    for (const b of novels) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${b.book_name ?? ""}</td><td><code>${b.book_id}</code></td>
+        <td>${b.word_count ?? "-"}</td><td>${b.creation_status ?? b.status ?? "-"}</td>`;
+      tb.appendChild(tr);
+    }
+    $("tbl-novels").style.display = "";
+  }
+  const sel = $("pub-book");
+  const cur = sel.value;
+  sel.innerHTML = "";
+  if (!novels.length) {
+    sel.appendChild(new Option("（账号下暂无书籍，请先在第 3 步建书）", ""));
+  } else {
+    for (const b of novels) sel.appendChild(new Option(`${b.book_name ?? ""}（${b.book_id}）`, String(b.book_id)));
+    if (cur && novels.some((b) => String(b.book_id) === cur)) sel.value = cur;
+  }
+  return novels;
+}
+$("btn-novels").onclick = async () => {
+  try {
+    await loadNovels();
+    msg($("msg-novels"), `共 ${novels.length} 本`, "ok");
+  } catch (e) { msg($("msg-novels"), e.message, "err"); }
+};
+$("btn-pub-books").onclick = async () => {
+  try {
+    await loadNovels(false);
+    msg($("msg-publish"), `书籍列表已刷新（共 ${novels.length} 本）`, "ok");
+  } catch (e) { msg($("msg-publish"), `❌ 刷新书籍列表失败：${e.message}`, "err"); }
+};
+
+// ③ 建书
+$("btn-pending").onclick = async () => {
+  try {
+    const p = await api("/api/pending");
+    $("bk-name").value = p.book_name ?? "";
+    $("bk-gender").value = String(p.gender ?? "0");
+    $("bk-sign").value = String(p.sign_pattern ?? "1");
+    $("bk-category").value = p.category ?? "";
+    $("bk-roles").value = p.roles ?? "";
+    $("bk-abstract").value = p.abstract ?? "";
+    $("bk-thumb").value = p.thumb_uri ?? "";
+    $("bk-selfpic").value = p.is_self_pic ?? "0";
+    $("bk-activity").value = p.activity_id ?? "0";
+    $("bk-labels").value = p.label_list ?? "";
+    msg($("msg-create"), "已载入预填参数", "ok");
+  } catch (e) { msg($("msg-create"), e.message, "err"); }
+};
+$("btn-create").onclick = async () => {
+  $("btn-create").disabled = true;
+  try {
+    const body = {
+      book_name: $("bk-name").value.trim(),
+      gender: $("bk-gender").value,
+      sign_pattern: $("bk-sign").value,
+      category: $("bk-category").value.trim(),
+      roles: $("bk-roles").value.trim(),
+      abstract: $("bk-abstract").value.trim(),
+      thumb_uri: $("bk-thumb").value.trim(),
+      is_self_pic: $("bk-selfpic").value.trim(),
+      activity_id: $("bk-activity").value.trim(),
+      label_list: $("bk-labels").value.trim(),
+    };
+    if (!body.book_name) throw new Error("书名不能为空");
+    const r = await api("/api/book/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    msg($("msg-create"), `✅ 建书成功！book_id = ${r.book_id}（已选入发布页目标书籍）`, "ok");
+    try {
+      await loadNovels(false);
+      $("pub-book").value = String(r.book_id);
+      loadRemoteChapters(String(r.book_id)); // 新书暂无远端章节，重建合并表（仅本地行）
+    } catch { /* 列表刷新失败不影响建书结果，可手动点「刷新书籍列表」 */ }
+    showTab(4); // 自动跳到「加载章节 & 发布」tab
+  } catch (e) { msg($("msg-create"), `❌ ${e.message}`, "err"); }
+  $("btn-create").disabled = false;
+};
+
+// ④ 从书目录加载章节（与批量发布同卡：选目录 + 浏览 + 加载；表格统一在本卡下方合并表展示）
+let chapters = [];
+$("btn-split").onclick = async () => {
+  try {
+    const p = encodeURIComponent($("bk-dir").value.trim());
+    const r = await api(`/api/book-chapters?path=${p}`);
+    chapters = r.chapters;
+    msg($("msg-split"), `加载 ${chapters.length} 章`, "ok");
+    const bookId = $("pub-book").value;
+    if (bookId) loadRemoteChapters(bookId); // 重建合并表（本地 × 远端按章节号对齐）
+    else msg($("msg-verify"), "已加载本地章节；请在上方选择目标书籍以生成合并表", "warn");
+  } catch (e) { msg($("msg-split"), e.message, "err"); }
+};
+
+// 文件夹浏览（点选书目录）
+let browsePath = null;
+function browseRow(label, isBook, onclick) {
+  const row = document.createElement("div");
+  row.style.cssText = "cursor:pointer;padding:4px 8px;border-radius:6px";
+  if (isBook) {
+    const star = document.createElement("b");
+    star.style.color = "var(--warn)";
+    star.textContent = "★ ";
+    row.appendChild(star);
+  }
+  row.append(document.createTextNode(label));
+  row.onmouseenter = () => (row.style.background = "#2c313a");
+  row.onmouseleave = () => (row.style.background = "");
+  row.onclick = onclick;
+  return row;
+}
+async function loadBrowse(p) {
+  try {
+    const r = await api(`/api/browse?path=${encodeURIComponent(p || "")}`);
+    browsePath = r.path;
+    $("browse-path").innerHTML = `当前：<b>${r.path}</b>` +
+      (r.isBook ? "　<b style='color:var(--ok)'>★ 是书目录</b>" : "");
+    const list = $("browse-list");
+    list.innerHTML = "";
+    // Windows 多磁盘：顶部一排盘符按钮，一键切换磁盘（C: D: …）
+    if (r.drives && r.drives.length > 1) {
+      const bar = document.createElement("div");
+      bar.style.cssText = "margin:2px 0 6px";
+      bar.append(Object.assign(document.createElement("span"), { className: "hint", textContent: "💽 切换磁盘：" }));
+      for (const d of r.drives) {
+        const b = document.createElement("button");
+        b.className = "ghost";
+        b.style.cssText = "margin:0 4px 4px 0;padding:2px 10px";
+        b.textContent = d.slice(0, 2);
+        b.title = `打开 ${d}`;
+        b.onclick = () => loadBrowse(d);
+        bar.appendChild(b);
+      }
+      list.appendChild(bar);
+    }
+    if (r.parent)
+      list.appendChild(browseRow("📁 ..（上一级）", false, () => loadBrowse(r.parent)));
+    for (const d of r.dirs)
+      list.appendChild(browseRow(`📁 ${d.name}`, d.isBook, () => loadBrowse(`${r.path}/${d.name}`)));
+    if (!r.dirs.length && !r.parent)
+      list.append(Object.assign(document.createElement("div"), { className: "hint", textContent: r.drives && r.drives.length ? "盘根无子目录，可用上方按钮切换磁盘" : "没有子目录" }));
+  } catch (e) { msg($("msg-split"), e.message, "err"); }
+}
+$("btn-browse").onclick = async () => {
+  $("browse-panel").style.display = "";
+  const cur = $("bk-dir").value.trim();
+  try {
+    // 若当前值本身就是书目录，直接上跳一级，方便在兄弟目录里点选（盘根书目录则留在本盘）
+    const probe = await api(`/api/browse?path=${encodeURIComponent(cur || "")}`);
+    loadBrowse(probe.isBook ? probe.parent || probe.path : cur);
+  } catch { loadBrowse(cur); }
+};
+$("btn-browse-close").onclick = () => ($("browse-panel").style.display = "none");
+$("btn-browse-pick").onclick = () => {
+  if (!browsePath) return;
+  $("bk-dir").value = browsePath;
+  $("browse-panel").style.display = "none";
+  saveBookDir(browsePath); // 程序赋值不触发 onchange，这里显式记住
+  $("btn-split").click(); // 选中后自动加载章节
+};
+// 记住书目录：改变输入框内容时上报服务端存盘，下次打开页面回填
+function saveBookDir(dir) {
+  const v = String(dir ?? "").trim();
+  if (!v) return;
+  api("/api/book-dir", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dir: v }) }).catch(() => {});
+}
+$("bk-dir").onchange = () => saveBookDir($("bk-dir").value);
+
+// ⑤ 批量发布（mode: "sel"=按勾选 / "all"=全书按章节顺序）
+async function doPublish(bookId, items, mode) {
+  const useAi = $("pub-ai").value;
+  const checkType = $("pub-check").value;
+  const aiText = useAi === "1" ? "是（使用了AI工具）" : "否（未使用AI）";
+  const chkText = checkType === "full" ? "全面检测（有风险将中止发布）" : "仅基础检测";
+  const nUpd = items.filter((x) => x.item_id).length;
+  const nNew = items.length - nUpd;
+  const split = nUpd && nNew ? `（${nUpd} 章更新已有 / ${nNew} 章全新上传）` : nUpd ? `（均为更新已有章节）` : "";
+  const head = mode === "all"
+    ? `确认向 book_id=${bookId} 按章节顺序发布全部 ${items.length} 章${split}？`
+    : mode === "one"
+      ? `确认${nUpd ? "更新" : "全新上传"}章节「${items[0].title}」？`
+      : `确认向 book_id=${bookId} 发布所选 ${items.length} 章${split}？`;
+  const shown = items.slice(0, 15).map((x) => "· " + x.title).join("\n");
+  const more = items.length > 15 ? `\n… 等共 ${items.length} 章` : "";
+  if (!confirm(`${head}\n是否使用AI申报：${aiText}\n内容检测方法：${chkText}\n${shown}${more}`)) return;
+  $("btn-publish").disabled = true;
+  $("btn-publish-all").disabled = true;
+  msg($("msg-publish"), `发布中（逐章提交，可能需要一点时间）…`, "warn");
+  try {
+    const r = await api("/api/publish", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ book_id: bookId, items, use_ai: Number(useAi), check_type: checkType }) });
+    const chk = (x) => {
+      const parts = [];
+      const b = x.checks?.base, f = x.checks?.full;
+      if (b) parts.push(b.error ? `基础检测请求失败（跳过）` : b.risks?.length ? `基础检测有 ${b.risks.length} 处质量风险（仍已发布）` : "基础检测通过");
+      if (f) parts.push(f.error ? `全面检测请求失败（视为通过）` : f.risks?.length ? `全面检测有 ${f.risks.length} 处风险` : "全面检测通过");
+      return parts.length ? `　[${parts.join("；")}]` : "";
+    };
+    const lines = r.results.map((x) => (x.ok ? `✅ ${x.title}（${x.updated ? "已更新" : "新发布"}，item_id=${x.itemId}）${chk(x)}` : `❌ ${x.title}：${x.error}${chk(x)}`));
+    const allOk = r.results.every((x) => x.ok);
+    msg($("msg-publish"), lines.join("\n") + (allOk ? "\n全部成功！章节总表已自动刷新。" : "\n已停止（遇错即停），请处理后重试剩余章节。"), allOk ? "ok" : "err");
+    if (allOk) loadRemoteChapters(bookId); // 发布后自动刷新合并表
+  } catch (e) { msg($("msg-publish"), `❌ ${e.message}`, "err"); }
+  $("btn-publish").disabled = false;
+  $("btn-publish-all").disabled = false;
+}
+$("btn-publish").onclick = async () => {
+  const bookId = $("pub-book").value;
+  if (!bookId) { msg($("msg-publish"), "❌ 请先选择目标书籍（列表为空可点「刷新书籍列表」或先在第 3 步建书）", "err"); return; }
+  const rows = mergedRows.filter((r) => mSelSet.has(r.key) && r.local);
+  if (!rows.length) { msg($("msg-publish"), "❌ 没有勾选任何可发布的本地章节", "err"); return; }
+  await doPublish(bookId, rows.map(rowItem), "sel");
+};
+// 全书上传：不看勾选状态，把第 4 步加载的本地章节按章节顺序全部发布（远端已存在的自动走更新路径）
+$("btn-publish-all").onclick = async () => {
+  const bookId = $("pub-book").value;
+  if (!bookId) { msg($("msg-publish"), "❌ 请先选择目标书籍（列表为空可点「刷新书籍列表」或先在第 3 步建书）", "err"); return; }
+  if (!chapters.length) { msg($("msg-publish"), "❌ 请先在第 4 步加载书目录章节", "err"); return; }
+  const rowByLocalIdx = new Map(mergedRows.filter((r) => r.local).map((r) => [r.localIdx, r]));
+  const items = chapters.map((c, i) => {
+    const row = rowByLocalIdx.get(i);
+    const it = { title: c.publishTitle, content: c.content };
+    if (row?.remote) { it.item_id = vId(row.remote); it.volume_id = String(row.remote.volume_id ?? ""); }
+    return it;
+  });
+  await doPublish(bookId, items, "all");
+};
+
+// ⑤ 章节总表：本地书目录 × 番茄端已上传，按章节号对齐（前端分页 20/50/100；所有行常驻 DOM，翻页只切显隐）
+let remoteList = [];
+let mergedRows = []; // {key, num, local, remote, localIdx}
+let mergedTrs = []; // 主行 tr（与 mergedRows 同序）
+let mSelSet = new Set(); // 勾选态存行 key 集合：翻页不丢
+let mPage = 1;
+let mPageSize = 20;
+const NUM_RE = /第\s*(\d+)\s*章/;
+function vId(c) { return String(c.item_id ?? c.id ?? ""); }
+function vTitle(c) { return c.title ?? c.chapter_title ?? ""; }
+function extractNum(title) { const m = String(title ?? "").match(NUM_RE); return m ? Number(m[1]) : null; }
+// 按章节号对齐本地与远端；重复号不覆盖、落为独立行
+function buildMerged() {
+  const byNum = new Map();
+  const rows = [];
+  chapters.forEach((c, i) => {
+    const num = extractNum(c.publishTitle);
+    const row = { key: "L" + i, num, local: c, remote: null, localIdx: i };
+    rows.push(row);
+    if (num !== null && !byNum.has(num)) byNum.set(num, row);
+  });
+  for (const r of remoteList) {
+    const num = extractNum(vTitle(r));
+    let row = num !== null ? byNum.get(num) : undefined;
+    if (row && !row.remote) row.remote = r;
+    else {
+      row = { key: "R" + vId(r), num, local: null, remote: r, localIdx: -1 };
+      rows.push(row);
+    }
+  }
+  rows.sort((a, b) => (a.num ?? Infinity) - (b.num ?? Infinity));
+  mergedRows = rows;
+  mSelSet = new Set(rows.filter((r) => r.local).map((r) => r.key)); // 本地行默认勾选、番茄端独有行默认不勾
+}
+// 行 → 发布 item：有远端则带 item_id/volume_id（服务端走更新路径），否则全新上传
+function rowItem(row) {
+  const it = { title: row.local.publishTitle, content: row.local.content };
+  if (row.remote) { it.item_id = vId(row.remote); it.volume_id = String(row.remote.volume_id ?? ""); }
+  return it;
+}
+function updateMSelCount() {
+  $("pub-summary").textContent = `已勾选 ${mSelSet.size} 章`;
+  $("m-selcount").textContent = `已勾选 ${mSelSet.size} 章`;
+}
+function renderMerged() {
+  const tb = $("tbl-merged").querySelector("tbody");
+  tb.innerHTML = "";
+  mergedTrs = [];
+  for (const row of mergedRows) {
+    const tr = document.createElement("tr");
+    const hints = [];
+    if (row.local) hints.push(row.local.file);
+    if (row.remote) hints.push(`item_id ${vId(row.remote)}`);
+    let status;
+    if (row.local && row.remote) {
+      const rt = vTitle(row.remote);
+      status = `<span style="color:var(--ok)">已上传</span>` + (rt !== row.local.publishTitle ? `<div class="hint">远端标题不同：${rt}</div>` : "");
+    } else if (row.local) status = `<span style="color:var(--warn)">未上传</span>`;
+    else status = `<span style="color:var(--dim)">仅番茄端</span>`;
+    const wc = row.local ? row.local.wordCount : (row.remote?.word_number ?? "-");
+    tr.innerHTML = `<td><input type="checkbox" class="mck" data-key="${row.key}" ${mSelSet.has(row.key) ? "checked" : ""}></td>
+      <td>${row.num ?? "—"}</td>
+      <td>${row.local ? row.local.publishTitle : vTitle(row.remote)}${hints.length ? `<div class="hint">${hints.join(" · ")}</div>` : ""}</td>
+      <td>${status}</td><td>${wc}</td>
+      <td style="white-space:nowrap"><button class="ghost m-up" data-key="${row.key}" ${row.local ? "" : "disabled"} title="${row.remote ? "更新番茄端已有章节" : "上传到番茄端（全新章节）"}">${row.local ? (row.remote ? "↻ 更新" : "⬆ 上传") : "—"}</button>
+        <button class="ghost m-del" data-key="${row.key}" ${row.remote ? "" : "disabled"} style="color:var(--err)" title="删除番茄端章节（不可恢复）">✕</button></td>`;
+    tb.appendChild(tr);
+    mergedTrs.push(tr);
+  }
+  $("tbl-merged").style.display = mergedRows.length ? "" : "none";
+  $("merged-actions-row").style.display = mergedRows.length ? "" : "none";
+  showMergedPage();
+  updateMSelCount();
+  msg($("msg-verify"), mergedRows.length
+    ? `共 ${mergedRows.length} 行（本地 ${chapters.length} 章 / 番茄端 ${remoteList.length} 章）`
+    : "暂无章节：请先在第 4 步加载书目录，并选择目标书籍",
+    mergedRows.length ? "ok" : "warn");
+}
+function showMergedPage() {
+  const total = mergedRows.length;
+  const pages = Math.max(1, Math.ceil(total / mPageSize));
+  if (mPage > pages) mPage = pages;
+  const start = (mPage - 1) * mPageSize;
+  const end = Math.min(total, start + mPageSize);
+  mergedTrs.forEach((tr, i) => {
+    tr.style.display = i >= start && i < end ? "" : "none";
+  });
+  $("merged-pager-row").style.display = total ? "" : "none";
+  $("merged-pager").textContent = total ? `第 ${mPage} / ${pages} 页 · 本页 ${end - start} 行 · 共 ${total} 行` : "";
+  $("btn-mprev").disabled = mPage <= 1;
+  $("btn-mnext").disabled = mPage >= pages;
+}
+$("tbl-merged").addEventListener("change", (e) => {
+  const ck = e.target.closest(".mck");
+  if (!ck) return;
+  if (ck.checked) mSelSet.add(ck.dataset.key);
+  else mSelSet.delete(ck.dataset.key);
+  updateMSelCount();
+});
+// 反选：作用于整本书全部行（跨页）
+$("btn-minvert").onclick = () => { mergedRows.forEach((r) => { if (mSelSet.has(r.key)) mSelSet.delete(r.key); else mSelSet.add(r.key); }); renderMerged(); };
+// 每行按钮：上传/更新（同一按钮，按远端是否存在自动走 new/update）/ 删除
+$("tbl-merged").onclick = (e) => {
+  const b = e.target.closest("button[data-key]");
+  if (!b || b.disabled) return;
+  const row = mergedRows.find((r) => r.key === b.dataset.key);
+  if (!row) return;
+  if (b.classList.contains("m-up")) {
+    const bookId = $("pub-book").value;
+    if (!bookId) { msg($("msg-publish"), "❌ 请先选择目标书籍", "err"); return; }
+    doPublish(bookId, [rowItem(row)], "one");
+  } else if (b.classList.contains("m-del")) {
+    doDeleteMerged([row], "one");
+  }
+};
+// 删除番茄端章节（不可恢复，逐章提交、遇错即停；删除后自动刷新列表）
+async function doDeleteMerged(rows, label) {
+  const bookId = $("pub-book").value;
+  if (!bookId) { msg($("msg-verify"), "❌ 请先选择目标书籍", "err"); return; }
+  const targets = rows.filter((r) => r.remote);
+  if (!targets.length) { msg($("msg-verify"), "❌ 没有可删除的番茄端章节（所选行均无远端章节）", "err"); return; }
+  const titles = targets.map((r) => vTitle(r.remote));
+  const preview = titles.length > 15 ? titles.slice(0, 15).join("\n") + `\n…（共 ${titles.length} 章）` : titles.join("\n");
+  const warn = label === "all"
+    ? `⚠️ 将删除该书【全部 ${targets.length} 章】已发布章节，删除后不可恢复！\n\n${preview}\n\n确定继续？`
+    : `将删除所选 ${targets.length} 章（删除后不可恢复）：\n\n${preview}\n\n确定删除？`;
+  if (!confirm(warn)) return;
+  const btns = ["btn-mdel-sel", "btn-mdel-all", "btn-minvert"];
+  btns.forEach((b) => ($(b).disabled = true));
+  const lines = [];
+  let okAll = true;
+  for (const row of targets) {
+    try {
+      await api("/api/chapter/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ book_id: bookId, item_id: vId(row.remote) }) });
+      lines.push(`✅ ${vTitle(row.remote)}（item_id=${vId(row.remote)}）`);
+    } catch (e) {
+      okAll = false;
+      lines.push(`❌ ${vTitle(row.remote)}：${e.message}`);
+      break; // 遇错即停
+    }
+  }
+  btns.forEach((b) => ($(b).disabled = false));
+  msg($("msg-verify"), lines.join("\n") + (okAll ? "\n删除完成，列表已刷新。" : "\n已停止（遇错即停），列表已刷新、勾选已重置，请重新勾选剩余章节。"), okAll ? "ok" : "err");
+  loadRemoteChapters(bookId);
+}
+$("btn-mdel-sel").onclick = () => doDeleteMerged(mergedRows.filter((r) => mSelSet.has(r.key)), "sel");
+$("btn-mdel-all").onclick = () => doDeleteMerged([...mergedRows], "all");
+// 加载目标书的番茄端章节 → 重建合并表（换书/刷新后重置默认勾选）
+async function loadRemoteChapters(bookId) {
+  if (!bookId) { msg($("msg-verify"), "❌ 先选择目标书籍", "err"); return; }
+  try {
+    const q = new URLSearchParams({ book_id: bookId, volume_id: $("chk-volume").value.trim() });
+    const data = await api(`/api/chapters?${q}`);
+    remoteList = Array.isArray(data) ? data : [];
+    buildMerged();
+    mPage = 1;
+    renderMerged();
+  } catch (e) { msg($("msg-verify"), e.message, "err"); }
+}
+$("btn-chapters").onclick = () => loadRemoteChapters($("pub-book").value);
+$("m-pagesize").onchange = () => { mPageSize = Number($("m-pagesize").value); mPage = 1; showMergedPage(); };
+$("btn-mprev").onclick = () => { if (mPage > 1) { mPage--; showMergedPage(); } };
+$("btn-mnext").onclick = () => { mPage++; showMergedPage(); };
+// 第 4 步选中目标书籍 → 自动加载该书的番茄端章节列表
+$("pub-book").onchange = () => { if ($("pub-book").value) loadRemoteChapters($("pub-book").value); };
+
+// Tab 切换：①登录状态 ②我的书籍 ③创建新书 ④加载章节 ⑤批量发布（卡片常驻 DOM 保状态）
+function showTab(n) {
+  document.querySelectorAll("#tabs .tab").forEach((b) => b.classList.toggle("active", Number(b.dataset.tab) === n));
+  for (let i = 1; i <= 4; i++) $("card-" + i).style.display = i === n ? "" : "none";
+}
+document.querySelectorAll("#tabs .tab").forEach((b) => (b.onclick = () => showTab(Number(b.dataset.tab))));
+showTab(1);
+
+// 初始化（书目录回填上次使用的值；无记录则留空，由用户输入或点「浏览」选择）
+(async () => {
+  const st = await loadStatus().catch(() => null);
+  api("/api/book-dir")
+    .then((r) => { if (r.dir) $("bk-dir").value = r.dir; })
+    .catch(() => {});
+  loadNovels(false).catch(() => {}); // 预载第 4 步目标书籍单选列表
+  const initLogin = await api("/api/login/status").catch(() => null); // 若服务端已有登录流程在进行（如刷新过页面），恢复轮询
+  if (initLogin) {
+    if (initLogin.phase === "waiting" || initLogin.phase === "saving") {
+      $("btn-login").disabled = true;
+      $("btn-login-cancel").style.display = "";
+      startLoginPoll();
+    } else if (initLogin.phase === "done") setLoginLine(`✅ ${initLogin.message}`, "ok");
+    else if (initLogin.phase === "error") setLoginLine(`❌ ${initLogin.error}`, "err");
+  }
+  // 未登录时自动加载番茄登录页；已登录时自动显示作家后台首页（均为应用版）
+  const loggedIn = st && st.cookieOk && st.tokenPrefix;
+  const idle = !initLogin || initLogin.phase === "idle";
+  if (appMode === "app") {
+    if (!loggedIn && idle) startLoginFlow();
+    else if (loggedIn) showHomeEmbed();
+  }
+})();
+</script>
+</body>
+</html>
