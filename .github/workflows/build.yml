@@ -1,10 +1,9 @@
 name: Build & Release
 
 on:
+  # 只在打标签发版时构建；日常推代码（main / PR）不触发打包
   push:
-    branches: [main]
     tags: ["v*"]
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -67,5 +66,8 @@ jobs:
           path: out
       - uses: softprops/action-gh-release@v3
         with:
-          files: out/*
+          # 安装包 + 使用说明（说明文档入库，随 Release 一起发布）
+          files: |
+            out/*
+            使用说明.md
           generate_release_notes: true

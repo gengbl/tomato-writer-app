@@ -102,22 +102,26 @@
     </div>
   </div>
   <div class="row">
-    <div><label>分类（逗号分隔 category_id：主分类必选且仅 1 个，主题/角色/情节各 ≤2）</label><input id="bk-category"></div>
-    <div><label>主要角色（JSON 数组字符串，签约后不能改）</label><input id="bk-roles"></div>
+    <div><label>主分类 *</label><select id="bk-cat-main"><option value="">加载中…</option></select></div>
+    <div><label>主题（可空）</label><select id="bk-cat-theme"><option value="">不选</option></select></div>
+    <div><label>角色（可空）</label><select id="bk-cat-role"><option value="">不选</option></select></div>
+    <div><label>情节（可空）</label><select id="bk-cat-plot"><option value="">不选</option></select></div>
   </div>
-  <label>简介（50~200 字）</label>
-  <textarea id="bk-abstract" rows="4"></textarea>
+  <div class="msg" id="msg-cat"></div>
   <div class="row">
-    <div><label>封面 thumb_uri（默认官方图）</label><input id="bk-thumb"></div>
-    <div><label>is_self_pic</label><input id="bk-selfpic" value="0"></div>
-    <div><label>activity_id</label><input id="bk-activity" value="0"></div>
-    <div><label>label_list（可空）</label><input id="bk-labels"></div>
+    <div><label>主要角色（多个用「、」或逗号分隔，签约后不能改）</label><input id="bk-roles" placeholder="王晓晓、刘馨、陈桓"></div>
   </div>
+  <label>简介（番茄要求 50~200 字）</label>
+  <textarea id="bk-abstract" rows="6"></textarea>
+  <div class="msg" id="msg-abstract"></div>
+  <p style="opacity:.75;font-size:13px">封面这里不用填：建书时自动用官方默认封面。想换封面，建好后点「🖼 打开封面设置页」，在番茄官网后台自己上传或挑选。</p>
   <div class="flex-end">
-    <button id="btn-pending" class="ghost">载入预填参数（最好的她）</button>
+    <button id="btn-cover" class="ghost">🖼 打开封面设置页</button>
     <button id="btn-create">创建书籍</button>
   </div>
   <div class="msg" id="msg-create"></div>
+  <div class="flex-end"><button id="btn-log" class="ghost">📄 查看诊断日志</button></div>
+  <pre id="log-view" style="display:none;max-height:260px;overflow:auto;background:rgba(0,0,0,.28);padding:8px;border-radius:6px;font-size:12px;white-space:pre-wrap"></pre>
 </div>
 
 <!-- ④ 从书目录加载章节 -->
@@ -255,7 +259,7 @@ async function pollLogin() {
       setLoginLine(`✅ ${s.message}（Token ${s.result.token}，有效期约 ${s.result.hours}h，共收 ${s.result.cookies} 个 Cookie）`, "ok");
       if (appMode === "app") $("embed-label").textContent = "✅ 登录成功！下方即你的番茄作家后台首页（登录状态已保持，可直接浏览）";
       loadStatus();
-      loadNovels(false).catch(() => {});
+      refreshNovelsAfterLogin("登录成功后");
     } else if (s.phase === "error") {
       stopLoginPoll();
       setLoginLine(`❌ ${s.error}`, "err");
@@ -365,6 +369,12 @@ async function loadNovels(showTable = true) {
         del.title = "已签约或不满足删除条件";
       }
       del.onclick = () => deleteBook(b);
+      const cover = document.createElement("button");
+      cover.className = "ghost";
+      cover.textContent = "封面";
+      cover.title = "在系统浏览器打开番茄官网的「书信息（封面）」页，改完回列表刷新";
+      cover.onclick = () => window.open(coverPageUrl(b.book_id), "_blank", "noopener");
+      tr.lastElementChild.appendChild(cover);
       tr.lastElementChild.appendChild(del);
       tb.appendChild(tr);
     }
@@ -381,17 +391,36 @@ async function loadNovels(showTable = true) {
   }
   return novels;
 }
+// 登录完成 / 启动时已登录：主动把「② 我的书籍」拉出来（表格 + 目标书籍下拉都填好）
+function refreshNovelsAfterLogin(when) {
+  loadNovels()
+    .then((list) => msg($("msg-novels"), `${when}已自动加载账号下 ${list.length} 本书`, "ok"))
+    .catch((e) => msg($("msg-novels"), `书籍列表自动加载失败：${e.message}（可到 ② 点「加载书籍列表」重试）`, "err"));
+}
+
 async function deleteBook(b) {
   if (!confirm(`确定删除《${b.book_name ?? ""}》（book_id ${b.book_id}）？`)) return;
   if (!confirm(`再确认一次：作品一旦删除，将无法恢复！\n仍要删除《${b.book_name ?? ""}》吗？`)) return;
   try {
+    const wasSelected = $("pub-book").value === String(b.book_id);
     await api("/api/book/delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ book_id: b.book_id }),
     });
-    msg($("msg-novels"), `已删除《${b.book_name ?? ""}》`, "ok");
-    await loadNovels(); // 刷新表格与第 4 步目标书籍下拉
+    // 删除成功后全页面联动刷新：书籍表格、目标书籍下拉、合并章节表、建书页封面跳转目标
+    if (lastCreatedBookId === String(b.book_id)) lastCreatedBookId = "";
+    await loadNovels();
+    if (wasSelected) {
+      if ($("pub-book").value) loadRemoteChapters($("pub-book").value);
+      else {
+        remoteList = []; // 没有可选书了，合并表清掉番茄端章节，只留本地行
+        buildMerged();
+        mPage = 1;
+        renderMerged();
+      }
+    }
+    msg($("msg-novels"), `已删除《${b.book_name ?? ""}》，列表已更新（现有 ${novels.length} 本）`, "ok");
   } catch (e) {
     msg($("msg-novels"), `删除失败：${e.message}`, "err");
   }
@@ -409,23 +438,105 @@ $("btn-pub-books").onclick = async () => {
   } catch (e) { msg($("msg-publish"), `❌ 刷新书籍列表失败：${e.message}`, "err"); }
 };
 
-// ③ 建书
-$("btn-pending").onclick = async () => {
-  try {
-    const p = await api("/api/pending");
-    $("bk-name").value = p.book_name ?? "";
-    $("bk-gender").value = String(p.gender ?? "0");
-    $("bk-sign").value = String(p.sign_pattern ?? "1");
-    $("bk-category").value = p.category ?? "";
-    $("bk-roles").value = p.roles ?? "";
-    $("bk-abstract").value = p.abstract ?? "";
-    $("bk-thumb").value = p.thumb_uri ?? "";
-    $("bk-selfpic").value = p.is_self_pic ?? "0";
-    $("bk-activity").value = p.activity_id ?? "0";
-    $("bk-labels").value = p.label_list ?? "";
-    msg($("msg-create"), "已载入预填参数", "ok");
-  } catch (e) { msg($("msg-create"), e.message, "err"); }
+// ③ 建书：分类字典（番茄 /api/author/book/category_list，label 分组 → 4 个下拉框）
+const CAT_SELECTS = { 主分类: "bk-cat-main", 主题: "bk-cat-theme", 角色: "bk-cat-role", 情节: "bk-cat-plot" };
+let catGroups = []; // [{label, items:[{category_id,name,description}]}]
+let catGender = null; // 已加载字典对应的频道，避免重复请求
+
+async function loadCategories() {
+  const gender = $("bk-gender").value;
+  if (catGroups.length && catGender === gender) return;
+  catExtra = [];
+  const prevText = {}; // 切换频道时尽量保留同名分类
+  for (const [label, id] of Object.entries(CAT_SELECTS)) {
+    const s = $(id);
+    if (s.value) prevText[label] = s.selectedOptions[0].textContent;
+  }
+  const r = await api(`/api/categories?gender=${encodeURIComponent(gender)}`);
+  catGroups = r.groups ?? [];
+  catGender = gender;
+  for (const { label, items } of catGroups) {
+    const sel = $(CAT_SELECTS[label]);
+    if (!sel) continue;
+    sel.innerHTML = "";
+    sel.appendChild(new Option(label === "主分类" ? "请选择" : "不选", ""));
+    for (const c of items) {
+      const o = new Option(c.name, c.category_id);
+      o.title = c.description || c.name;
+      sel.appendChild(o);
+    }
+    if (prevText[label]) {
+      const hit = [...sel.options].find((o) => o.textContent === prevText[label]);
+      if (hit) sel.value = hit.value;
+    }
+  }
+  const unknown = catGroups.filter((g) => !CAT_SELECTS[g.label]).map((g) => g.label);
+  msg(
+    $("msg-cat"),
+    `分类字典已加载（${gender === "1" ? "男频" : "女频"}，共 ${catGroups.reduce((n, g) => n + g.items.length, 0)} 项）` +
+      (unknown.length ? `，未展示的分组：${unknown.join("、")}` : ""),
+    "ok"
+  );
+}
+
+function categoryValue() {
+  return Object.values(CAT_SELECTS).map((id) => $(id).value).filter(Boolean).join(",");
+}
+
+$("bk-gender").onchange = () => loadCategories().catch((e) => msg($("msg-cat"), `分类加载失败：${e.message}`, "err"));
+// 主要角色：界面上填「、」或逗号分隔的名字，提交时才转成番茄要用的 JSON 数组字符串
+function rolesValue() {
+  const s = $("bk-roles").value.trim();
+  if (!s) return "[]";
+  if (s.startsWith("[")) return s; // 已经是 JSON 数组（如预填回填的）就原样提交
+  return JSON.stringify(s.split(/[、,，;；/\n]+/).map((x) => x.trim()).filter(Boolean));
+}
+
+// 封面：工具不管，交给番茄后台；这里只用系统浏览器打开该书的「书信息（封面）」页
+let lastCreatedBookId = "";
+function coverPageUrl(bookId) {
+  return `https://fanqienovel.com/main/writer/book-info/${bookId}`;
+}
+$("btn-cover").onclick = () => {
+  const id = lastCreatedBookId || $("pub-book").value || "";
+  if (!id) { msg($("msg-create"), "还没选中书：先创建书籍，或到 ② 我的书籍里选一本", "err"); return; }
+  const b = novels.find((x) => String(x.book_id) === String(id));
+  window.open(coverPageUrl(id), "_blank", "noopener"); // Electron 里由主进程 shell.openExternal 转交系统浏览器
+  msg($("msg-create"), `已在浏览器打开${b ? `《${b.book_name}》` : ""}的番茄封面/书信息页（book_id ${id}），改完回列表刷新即可`, "ok");
 };
+
+// ③ 建书失败时看诊断日志（打包版没有控制台；控制台也可按 F12 打开）
+$("btn-log").onclick = async () => {
+  const v = $("log-view");
+  if (v.style.display !== "none") { v.style.display = "none"; return; }
+  try {
+    const r = await api("/api/log");
+    v.textContent = r.text;
+    v.style.display = "";
+    msg($("msg-create"), `日志文件：${r.file}`, "ok");
+  } catch (e) { msg($("msg-create"), `读取日志失败：${e.message}`, "err"); }
+};
+
+// 简介：打开建书页时填入一段真实可用的示例简介（番茄已上架书的写法），改几个词就能用
+const ABSTRACT_SAMPLE =
+  "毕业五年，王晓晓在同学聚会上重逢闺蜜刘馨。刘馨身边有个死缠烂打的追求者陈桓，王晓晓搬去同住美其名曰把关，实则盯上了这个男人。她使尽茶艺挑拨离间，步步为营，却总被陈桓反将一军。撤资风波、仓促婚约、新对手李沁登场……当绿茶的算计一次次落空，最好的她，究竟能不能等到属于自己的那个人？";
+let abstractFilled = false;
+function fillAbstractSample() {
+  if (abstractFilled || $("bk-abstract").value.trim()) return;
+  $("bk-abstract").value = ABSTRACT_SAMPLE;
+  abstractFilled = true;
+  updateAbstractCount();
+  msg($("msg-abstract"), "已填入一段示例简介（可直接编辑改词）——提交前记得换成自己书的内容", "ok");
+}
+
+// 简介字数实时提示（番茄要求 50~200 字）
+function updateAbstractCount() {
+  const n = [...$("bk-abstract").value.trim()].length;
+  const el = $("msg-abstract");
+  el.textContent = n === 0 ? "" : `${n} 字${n < 50 ? "（番茄要求 50~200 字，还差 " + (50 - n) + "）" : n > 200 ? "（超过 200 字，需精简）" : " ✓"}`;
+  el.className = "msg " + (n >= 50 && n <= 200 ? "ok" : "err");
+}
+$("bk-abstract").oninput = updateAbstractCount;
 $("btn-create").onclick = async () => {
   $("btn-create").disabled = true;
   try {
@@ -433,17 +544,17 @@ $("btn-create").onclick = async () => {
       book_name: $("bk-name").value.trim(),
       gender: $("bk-gender").value,
       sign_pattern: $("bk-sign").value,
-      category: $("bk-category").value.trim(),
-      roles: $("bk-roles").value.trim(),
+      category: categoryValue(),
+      roles: rolesValue(), // 界面上是「、」分隔的名字，这里转成 JSON 数组字符串
       abstract: $("bk-abstract").value.trim(),
-      thumb_uri: $("bk-thumb").value.trim(),
-      is_self_pic: $("bk-selfpic").value.trim(),
-      activity_id: $("bk-activity").value.trim(),
-      label_list: $("bk-labels").value.trim(),
     };
     if (!body.book_name) throw new Error("书名不能为空");
+    if (!body.category) throw new Error("请先选择主分类");
+    const len = [...body.abstract].length; // 番茄对简介的字数要求：50~200
+    if (len < 50 || len > 200) throw new Error(`简介需 50~200 字（当前 ${len} 字）`);
     const r = await api("/api/book/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    msg($("msg-create"), `✅ 建书成功！book_id = ${r.book_id}（已选入发布页目标书籍）`, "ok");
+    lastCreatedBookId = String(r.book_id);
+    msg($("msg-create"), `✅ 建书成功！book_id = ${r.book_id}（已选入发布页目标书籍；换封面请点「🖼 打开封面设置页」）`, "ok");
     try {
       await loadNovels(false);
       $("pub-book").value = String(r.book_id);
@@ -771,6 +882,10 @@ $("pub-book").onchange = () => { if ($("pub-book").value) loadRemoteChapters($("
 function showTab(n) {
   document.querySelectorAll("#tabs .tab").forEach((b) => b.classList.toggle("active", Number(b.dataset.tab) === n));
   for (let i = 1; i <= 4; i++) $("card-" + i).style.display = i === n ? "" : "none";
+  if (n === 3) {
+    loadCategories().catch((e) => msg($("msg-cat"), `分类加载失败：${e.message}`, "err")); // 打开建书页自动取番茄分类字典
+    fillAbstractSample(); // 简介为空时填一段示例简介
+  }
 }
 document.querySelectorAll("#tabs .tab").forEach((b) => (b.onclick = () => showTab(Number(b.dataset.tab))));
 showTab(1);
@@ -781,7 +896,8 @@ showTab(1);
   api("/api/book-dir")
     .then((r) => { if (r.dir) $("bk-dir").value = r.dir; })
     .catch(() => {});
-  loadNovels(false).catch(() => {}); // 预载第 4 步目标书籍单选列表
+  if (st && st.cookieOk) refreshNovelsAfterLogin("启动时已登录，"); // 已登录 → 主动加载「② 我的书籍」（表格 + 目标书籍下拉）
+  else loadNovels(false).catch(() => {}); // 未登录：只把第 4 步下拉占位准备好，失败不提示
   const initLogin = await api("/api/login/status").catch(() => null); // 若服务端已有登录流程在进行（如刷新过页面），恢复轮询
   if (initLogin) {
     if (initLogin.phase === "waiting" || initLogin.phase === "saving") {

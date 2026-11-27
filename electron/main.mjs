@@ -8,7 +8,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, Menu, session, webContents } from "electron";
+import { app, BrowserWindow, Menu, session, shell, webContents } from "electron";
 
 const SELF_DIR = path.dirname(fileURLToPath(import.meta.url));
 // .env / web-state.json 存放处：打包版在 exe 旁边（整目录拷走即带走登录状态），开发模式在 web/ 下。
@@ -114,6 +114,19 @@ if (!app.requestSingleInstanceLock()) {
     // 页面 <title> 会随番茄页面变，锁死为工具名
     mainWin.on("page-title-updated", (e) => e.preventDefault());
     mainWin.on("closed", () => (mainWin = null));
+    // 应用菜单被移除（见下方 setApplicationMenu(null)），DevTools 的默认快捷键失效，这里自己接 F12 / Ctrl+Shift+I
+    mainWin.webContents.on("before-input-event", (_e, input) => {
+      const k = String(input.key || "").toLowerCase();
+      if (input.type === "keyDown" && (k === "f12" || (input.control && input.shift && k === "i")))
+        mainWin.webContents.toggleDevTools();
+    });
+    if (process.env.TOMATO_DEVTOOLS === "1" || process.argv.includes("--devtools"))
+      mainWin.webContents.openDevTools({ mode: "detach" });
+    // 页面里的 window.open（如「🖼 打开封面设置页」）交给系统浏览器，应用内不开新窗口
+    mainWin.webContents.setWindowOpenHandler(({ url }) => {
+      if (/^https?:\/\//.test(url)) shell.openExternal(url);
+      return { action: "deny" };
+    });
     mainWin.loadURL(`http://127.0.0.1:${port}`);
 
     if (process.env.TOMATO_SELFTEST) {
@@ -181,6 +194,103 @@ if (!app.requestSingleInstanceLock()) {
             const hasLogin = (await loginSession().cookies.get({ domain: "fanqienovel.com" })).some((c) => /^sessionid(_ss)?$/.test(c.name));
             console.log(`[selftest] home: cookieOk=${s.cookieOk} embed=${embedShown} guestUrl=${guestUrl} 会话含sessionid=${hasLogin}`);
             app.exit(s.cookieOk && embedShown && guestUrl && guestUrl.includes("fanqienovel.com") && hasLogin ? 0 : 1);
+          } else if (process.env.TOMATO_SELFTEST === "categories") {
+            // 建书分类下拉验证：打开第 3 屏 → 番茄字典填充 4 个下拉框 → 提交值取 id；切换频道应换字典
+            const opts = () =>
+              mainWin.webContents.executeJavaScript(
+                `JSON.stringify(["bk-cat-main","bk-cat-theme","bk-cat-role","bk-cat-plot"].map((id) => {` +
+                  `const s = document.getElementById(id); return id + "=" + s.options.length + "项" + (s.value ? "(已选" + s.value + ")" : "");}))`
+              );
+            await mainWin.webContents.executeJavaScript(`showTab(3); true`); // 打开「③ 创建新书」（会取分类字典、填示例简介）
+            await new Promise((r) => setTimeout(r, 3500));
+            const a = JSON.parse(await opts());
+            const val = await mainWin.webContents.executeJavaScript(
+              `(() => { const s = document.getElementById("bk-cat-main"); s.selectedIndex = 1; s.dispatchEvent(new Event("change")); return categoryValue(); })()`
+            );
+            console.log(`[selftest] 女频分类: ${a.join(" ")}`);
+            console.log(`[selftest] 选中主分类后 categoryValue = ${val}`);
+            const rolesOut = await mainWin.webContents.executeJavaScript(
+              `(() => { const s = document.getElementById("bk-roles"); s.value = "王晓晓、刘馨,陈桓 / 李沁"; return rolesValue(); })()`
+            );
+            console.log(`[selftest] 角色「王晓晓、刘馨,陈桓 / 李沁」→ rolesValue = ${rolesOut}`);
+            const coverUrl = await mainWin.webContents.executeJavaScript(`coverPageUrl("1234567890")`);
+            console.log(`[selftest] 封面页 URL = ${coverUrl}`);
+            const abstractInfo = JSON.parse(
+              await mainWin.webContents.executeJavaScript(
+                `(() => { const t = document.getElementById("bk-abstract"); const m = document.getElementById("msg-abstract");` +
+                  `const 示例 = { 是真实文字: t.value.includes("王晓晓") && !t.value.includes("①"), 字数: [...t.value.trim()].length };` +
+                  `t.value = "试".repeat(60); t.dispatchEvent(new Event("input"));` +
+                  `return JSON.stringify({ 示例, 字数提示: m.textContent, 预填按钮还在: !!document.getElementById("btn-pending"), 日志按钮: !!document.getElementById("btn-log") }); })()`
+              )
+            );
+            console.log(
+              `[selftest] 简介: 真实文字示例=${abstractInfo.示例.是真实文字}（${abstractInfo.示例.字数} 字） 字数提示=${abstractInfo.字数提示} 预填按钮还在=${abstractInfo.预填按钮还在} 诊断日志按钮=${abstractInfo.日志按钮}`
+            );
+            await mainWin.webContents.executeJavaScript(
+              `(() => { const g = document.getElementById("bk-gender"); g.value = "1"; g.dispatchEvent(new Event("change")); return true; })()`
+            );
+            await new Promise((r) => setTimeout(r, 3500));
+            const b = JSON.parse(await opts());
+            console.log(`[selftest] 男频分类: ${b.join(" ")}`);
+            const okCount = (arr) => arr.every((s) => Number((/\d+/.exec(s) || [0])[0]) > 5);
+            let rolesOk = false;
+            try { rolesOk = JSON.parse(rolesOut).join(",") === "王晓晓,刘馨,陈桓,李沁"; } catch { /* 非法 JSON，判失败 */ }
+            const pass =
+              okCount(a) && okCount(b) && /^\d+(,\d+)*$/.test(val) && !b[0].includes("(已选") && rolesOk &&
+              coverUrl.includes("/book-info/1234567890") && abstractInfo.示例.是真实文字 &&
+              abstractInfo.示例.字数 >= 50 && abstractInfo.示例.字数 <= 200 &&
+              abstractInfo.字数提示.includes("✓") && !abstractInfo.预填按钮还在 && abstractInfo.日志按钮;
+            console.log(`[selftest] 结果：${pass ? "PASS ✅" : "FAIL ❌"}`);
+            app.exit(pass ? 0 : 1);
+          } else if (process.env.TOMATO_SELFTEST === "books") {
+            // 「② 我的书籍」联动验证：登录后主动刷新（表格+下拉）、签约书删除置灰、删除后全页面联动
+            const out = await mainWin.webContents.executeJavaScript(`(async () => {
+              let 远端刷新 = 0;
+              const origRemote = window.loadRemoteChapters;
+              window.loadRemoteChapters = () => { 远端刷新++; };
+              let 书目 = [
+                { book_id: "101", book_name: "测试书A", word_count: 1200 },
+                { book_id: "102", book_name: "测试书B", is_signing: true },
+              ];
+              const origApi = window.api;
+              window.api = async (p, o) => {
+                if (p === "/api/novels") return 书目;
+                if (p === "/api/book/delete") { const id = JSON.parse(o.body).book_id; 书目 = 书目.filter((b) => b.book_id !== id); return { book_id: id }; }
+                return null;
+              };
+              const log = [];
+              // 等启动时那次真实「② 我的书籍」加载结束，否则它会覆盖下面的假数据（自检竞态，非应用 bug）
+              for (let i = 0; i < 20; i++) {
+                const t = document.getElementById("msg-novels").textContent;
+                if (t.includes("本") || t.includes("失败")) break;
+                await new Promise((r) => setTimeout(r, 500));
+              }
+              refreshNovelsAfterLogin("登录成功后");
+              await new Promise((r) => setTimeout(r, 200));
+              const tr = () => document.querySelectorAll("#tbl-novels tbody tr");
+              log.push("登录后表格行=" + tr().length);
+              log.push("表格可见=" + (getComputedStyle(document.getElementById("tbl-novels")).display !== "none"));
+              log.push("目标书籍下拉项=" + document.getElementById("pub-book").options.length);
+              log.push("签约书删除置灰=" + tr()[1].querySelectorAll("button")[1].disabled);
+              window.confirm = () => true;
+              document.getElementById("bk-dir").value = "";
+              await deleteBook(书目.find((b) => b.book_id === "101") || { book_id: "101", book_name: "测试书A" });
+              await new Promise((r) => setTimeout(r, 200));
+              log.push("删除后表格行=" + tr().length);
+              log.push("删除后提示=" + document.getElementById("msg-novels").textContent);
+              log.push("删除后联动刷新远端章节=" + 远端刷新);
+              window.api = origApi;
+              window.loadRemoteChapters = origRemote;
+              return JSON.stringify(log);
+            })()`);
+            const lines = JSON.parse(out);
+            for (const l of lines) console.log("[selftest] " + l);
+            const ok =
+              lines[0] === "登录后表格行=2" && lines[1] === "表格可见=true" && lines[2] === "目标书籍下拉项=2" &&
+              lines[3] === "签约书删除置灰=true" && lines[4] === "删除后表格行=1" &&
+              lines[5].includes("已删除《测试书A》") && lines[5].includes("现有 1 本") && lines[6] === "删除后联动刷新远端章节=1";
+            console.log(`[selftest] 结果：${ok ? "PASS ✅" : "FAIL ❌"}`);
+            app.exit(ok ? 0 : 1);
           } else {
             const text = await mainWin.webContents.executeJavaScript("document.body.innerText.slice(0, 300)");
             console.log("[selftest] 窗口加载成功，页面文本开头：\n" + text);

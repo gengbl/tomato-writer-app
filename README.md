@@ -13,11 +13,11 @@ npm run app      # Electron 应用模式（应用内登录/首页）
 ## 打包
 
 ```bash
-npm run build:app:win     # Windows 免安装 exe（dist-app/tomato-writer-app.exe）
-npm run build:app:linux   # Linux AppImage
+npm run build:app:win     # Windows 免安装 exe（dist-app/tomato-writer-app-<版本>.exe）
+npm run build:app:linux   # Linux AppImage（dist-app/tomato-writer-app-<版本>.AppImage）
 npm run build:exe         # 控制台单文件版（需 bun）
 ```
 
 ## CI
 
-推送 `v*` 标签（如 `v0.1.0`）自动构建 Windows exe 与 Linux AppImage 并发布到 GitHub Release；普通 push 仅产出构建产物供下载验证。
+**只有推送 `v*` 标签（如 `v0.1.5`）或在 Actions 里手动触发时才构建**，自动产出 Windows exe 与 Linux AppImage，并创建 GitHub Release（附两个安装包 + `使用说明.md`）。日常 push 到 main 不触发打包。

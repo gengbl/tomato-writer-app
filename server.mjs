@@ -20,7 +20,14 @@ import puppeteer from "puppeteer-core";
 // 直接 node 跑源码时保持原行为（.env 在仓库根目录）
 const ROOT = globalThis.__APP_ROOT__ ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ENV_FILE = path.join(ROOT, ".env");
-const PENDING_FILE = path.join(ROOT, "pending-create-最好的她.json");
+// 番茄接口调用诊断日志（打包版没有控制台，出错时靠这个文件排查）：与 .env 同目录
+const LOG_FILE = path.join(ROOT, "app.log");
+function logApp(...parts) {
+  const line = `${new Date().toISOString()} ${parts.join(" ")}`;
+  try { fs.appendFileSync(LOG_FILE, line + "\n"); } catch { /* 日志写不进去不影响功能 */ }
+  console.log(line);
+}
+
 // 前端状态记忆（上次使用的书目录等），JSON：{ bookDir }
 const STATE_FILE = path.join(ROOT, "web-state.json");
 function loadState() {
@@ -124,7 +131,8 @@ async function parse(res, pathName) {
     const hint = /登录|登陆|csrf|权限|未授权|token/i.test(msg)
       ? "（鉴权可能失效，请先刷新 Token）"
       : "";
-    throw new TomatoApiError(j.code, `${msg}${hint}`);
+    logApp(`[api-err] ${pathName} code=${j.code} msg=${msg} data=${JSON.stringify(j.data ?? null)}`);
+    throw new TomatoApiError(j.code, `${msg}${hint}（番茄 code=${j.code}，详情见 ${LOG_FILE}）`);
   }
   return j.data;
 }
@@ -711,7 +719,43 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      // 建书预填参数（pending-create-最好的她.json，若存在）
+      // 建书分类字典（番茄前端 CATEGORY_LIST）：GET /api/author/book/category_list/v0/?gender=0|1
+      // 返回平铺列表，label 字段即分组：主分类 / 主题 / 角色 / 情节。这里按 label 分组返回，前端渲染下拉框。
+      case "GET /api/categories": {
+        const gender = url.searchParams.get("gender") || "0";
+        const data = await apiGet("/api/author/book/category_list/v0/", { gender });
+        const list = Array.isArray(data) ? data : data?.list ?? data?.category_list ?? [];
+        const order = [];
+        const byLabel = new Map();
+        for (const c of list) {
+          const label = String(c.label ?? "其他");
+          if (!byLabel.has(label)) {
+            byLabel.set(label, []);
+            order.push(label);
+          }
+          byLabel.get(label).push({
+            category_id: String(c.category_id),
+            name: c.name ?? "",
+            description: c.description ?? "",
+          });
+        }
+        json(res, 200, { gender, groups: order.map((label) => ({ label, items: byLabel.get(label) })) });
+        return;
+      }
+
+      // 诊断日志尾部：界面里点「查看诊断日志」用（打包版没有控制台，靠这个看番茄返回了什么）
+      case "GET /api/log": {
+        let text = "";
+        try {
+          const buf = fs.readFileSync(LOG_FILE, "utf8");
+          text = buf.length > 6000 ? buf.slice(-6000) : buf;
+        } catch {
+          text = "（还没有日志：暂时没有接口出过错）";
+        }
+        json(res, 200, { file: LOG_FILE, text });
+        return;
+      }
+
       // 记住书目录：前端改变书目录时上报，下次打开页面回填
       case "GET /api/book-dir": {
         json(res, 200, { dir: loadState().bookDir ?? null });
@@ -725,18 +769,34 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      case "GET /api/pending": {
-        if (!fs.existsSync(PENDING_FILE)) {
-          json(res, 404, { error: "没有 pending-create-最好的她.json" });
-          return;
-        }
-        json(res, 200, JSON.parse(fs.readFileSync(PENDING_FILE, "utf8")));
-        return;
-      }
-
       case "POST /api/book/create": {
         const body = await readBody(req);
-        const data = await apiPost("/api/author/book/create/v0/", body);
+        // 主要角色：界面/命令行传「、」或逗号分隔的名字也行，这里统一转成番茄要用的 JSON 数组字符串
+        const rolesRaw = String(body.roles ?? "").trim();
+        if (rolesRaw && !rolesRaw.startsWith("[")) {
+          body.roles = JSON.stringify(rolesRaw.split(/[、,，;；/\n]+/).map((s) => s.trim()).filter(Boolean));
+        }
+        // 封面：界面上不填封面，但番茄这个字段不能省——官方建书提交处（chunk 8034.266c0c9a.js）
+        // 三级兜底后必定带 thumb_uri：上传图 → 模板图 → 官方默认封面 novel-static/7107d91219967759d105674fa8393923。
+        // 我们之前省略该字段，番茄就回「参数有误」。之后要换封面去番茄后台改。
+        // 想用别的默认图：.env 配 TOMATO_DEFAULT_THUMB=novel-xxx/yyy
+        const DEFAULT_THUMB = "novel-static/7107d91219967759d105674fa8393923";
+        const env = loadEnv();
+        const thumb = String(body.thumb_uri ?? "").trim();
+        body.thumb_uri = thumb || String(env.TOMATO_DEFAULT_THUMB ?? "").trim() || DEFAULT_THUMB;
+        if (!String(body.is_self_pic ?? "").trim()) body.is_self_pic = "0";
+        // activity_id / label_list 界面上已不显示，按官方默认值补上（官方：activity_id=0、label_list=""）
+        if (body.activity_id === undefined) body.activity_id = "0";
+        if (body.label_list === undefined) body.label_list = "";
+        logApp(`[create] 提交番茄 book_name=${body.book_name} gender=${body.gender} category=${body.category} sign_pattern=${body.sign_pattern} thumb_uri=${body.thumb_uri} roles=${body.roles ?? ""} 简介=${[...String(body.abstract ?? "")].length}字`);
+        let data;
+        try {
+          data = await apiPost("/api/author/book/create/v0/", body);
+        } catch (e) {
+          logApp(`[create] 失败：${e.message} 参数=${JSON.stringify(body)}`);
+          throw e;
+        }
+        logApp(`[create] 成功 book_id=${data?.book_id}`);
         json(res, 200, { book_id: String(data.book_id), data });
         return;
       }
