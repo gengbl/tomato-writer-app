@@ -73,4 +73,6 @@ jobs:
         with:
           # 安装包 + 使用说明（说明文档入库，随 Release 一起发布，附件名为 ASCII）
           files: out/*
+          # 先清掉本 Release 已有的附件：否则改了附件名（或旧版中文名残留）会一直挂在上面
+          preremove: true
           generate_release_notes: true
