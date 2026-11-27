@@ -55,4 +55,8 @@ npm run build:exe         # 备用控制台版单文件 exe（bun，需 /tmp/ope
 - 跑 Electron 需要 `--no-sandbox`；旧的 AppImage 残留进程会持单实例锁导致新实例静默退出（`pkill -f "[t]omato-writer"`）。注意 pkill 要和启动/构建命令**分成两条命令**跑：同一条命令的命令行里含 `tomato-writer`，`pkill -f` 会把执行命令的 shell 自己杀掉
 - 番茄登录 Cookie 会过期（`.env` 里的 `TOMATO_COOKIE`），过期时接口报鉴权错，需重新走内嵌扫码登录
 - 番茄 `code=-2 参数有误` = 必填参数缺失或格式不对（例：建书省略 `thumb_uri` 就这样报）。查这类问题别靠真建书试错，用**安全探测法**：`book_name` 填账号里已存在的书名 → 参数过关番茄回 `-2006 该书名已存在`（不会真建出书），回 `-2` 说明参数本身有问题
+- 中文文件名会被 GitHub Release 附件名啃坏：`使用说明.md` 作为附件会变成 `default.md`（产物名同理），所以附件一律 ASCII（`tomato-writer-guide.md`）
+- `softprops/action-gh-release` 的 `preremove: true` 清不掉「改名之前」的旧附件（实测 `default.md` 仍在），`build.yml` 里有个「删除不在白名单里的 Release 附件」步骤用 `secrets.GITHUB_TOKEN` 兜底删
+- 本机 `api.github.com` 匿名访问限流很凶（轮询几次就 403），查 CI 状态要节制次数，或改看网页 HTML / `releases/download/...` 探测（302/200 = 附件在）
 - `npx electron` 跑 `TOMATO_SELFTEST` 时**退出码不可靠**（断言 FAIL 也可能返回 0），判断结果要看日志里的 `[selftest] 结果：PASS/FAIL` 行
+- `books` 自检会被「启动时已登录 → 主动加载书籍列表」的真实请求覆盖假数据，所以自检里先等 `msg-novels` 出结果再 mock（这是自检竞态，不是应用 bug）

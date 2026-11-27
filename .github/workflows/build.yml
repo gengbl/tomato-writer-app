@@ -76,3 +76,22 @@ jobs:
           # 先清掉本 Release 已有的附件：否则改了附件名（或旧版中文名残留）会一直挂在上面
           preremove: true
           generate_release_notes: true
+      # preremove 实测清不掉改名前的旧附件（例如曾被啃成 default.md），这里按白名单兜底删一遍
+      - name: 删除不在白名单里的 Release 附件
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          KEEP=("tomato-writer-app-$VER.exe" "tomato-writer-app-$VER.AppImage" "tomato-writer-guide.md")
+          REL_ID=$(curl -s -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$REPO/releases/tags/$TAG" | jq -r .id)
+          curl -s -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$REPO/releases/$REL_ID/assets?per_page=100" |
+            jq -r '.[] | "\(.id) \(.name)"' | while read -r ID NAME; do
+              KEEP_IT=no
+              for K in "${KEEP[@]}"; do [ "$NAME" = "$K" ] && KEEP_IT=yes; done
+              if [ "$KEEP_IT" = no ]; then
+                echo "删除多余附件：$NAME ($ID)"
+                curl -s -X DELETE -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$REPO/releases/assets/$ID" > /dev/null
+              fi
+            done
