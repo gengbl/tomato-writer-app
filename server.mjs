@@ -693,6 +693,24 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      // 删除书籍（逆向自番茄前端 BookManage chunk）：POST /api/author/book/delete/v0, book_id。
+      // 番茄规则：签约中/已签约不可删（签约评估通过 21 天后不签约可删）。列表条目自带 can_delete/is_signing，
+      // 这里服务端再校验一次防绕过；字段缺失（接口演进）时不拦，由番茄端返回错误兜底。
+      case "POST /api/book/delete": {
+        const body = await readBody(req);
+        const bookId = String(body.book_id || "");
+        if (!bookId) throw new TomatoApiError(-2, "缺少 book_id");
+        const listData = await apiGet("/api/author/book/book_list/v0", { page_index: 0, page_count: 50 });
+        const list = Array.isArray(listData) ? listData : listData?.book_list ?? listData?.list ?? [];
+        const book = list.find((b) => String(b.book_id) === bookId);
+        if (!book) throw new TomatoApiError(-1, "账号下未找到该书籍（可能已被删除，请刷新列表）");
+        if (book.is_signing) throw new TomatoApiError(-1, "作品签约中暂不支持删除（签约评估通过 21 天后不签约可删除）");
+        if (book.can_delete === false) throw new TomatoApiError(-1, "该书籍当前不可删除（已签约或不满足删除条件）");
+        const data = await apiPost("/api/author/book/delete/v0", { book_id: bookId });
+        json(res, 200, { book_id: bookId, book_name: book.book_name ?? "", data });
+        return;
+      }
+
       // 建书预填参数（pending-create-最好的她.json，若存在）
       // 记住书目录：前端改变书目录时上报，下次打开页面回填
       case "GET /api/book-dir": {

@@ -83,7 +83,7 @@
   <h2><span class="no">2</span>我的书籍</h2>
   <button id="btn-novels" class="ghost">加载书籍列表</button>
   <table id="tbl-novels" style="display:none">
-    <thead><tr><th>书名</th><th>book_id</th><th>字数</th><th>状态</th></tr></thead>
+    <thead><tr><th>书名</th><th>book_id</th><th>字数</th><th>状态</th><th>操作</th></tr></thead>
     <tbody></tbody>
   </table>
   <div class="msg" id="msg-novels"></div>
@@ -352,7 +352,20 @@ async function loadNovels(showTable = true) {
     for (const b of novels) {
       const tr = document.createElement("tr");
       tr.innerHTML = `<td>${b.book_name ?? ""}</td><td><code>${b.book_id}</code></td>
-        <td>${b.word_count ?? "-"}</td><td>${b.creation_status ?? b.status ?? "-"}</td>`;
+        <td>${b.word_count ?? "-"}</td><td>${b.creation_status ?? b.status ?? "-"}</td><td></td>`;
+      const del = document.createElement("button");
+      del.className = "ghost";
+      del.textContent = "删除";
+      del.style.cssText = "color:#b3372f;border-color:#b3372f";
+      if (b.is_signing) {
+        del.disabled = true;
+        del.title = "作品签约中暂不支持删除（签约评估通过 21 天后不签约可删除）";
+      } else if (b.can_delete === false) {
+        del.disabled = true;
+        del.title = "已签约或不满足删除条件";
+      }
+      del.onclick = () => deleteBook(b);
+      tr.lastElementChild.appendChild(del);
       tb.appendChild(tr);
     }
     $("tbl-novels").style.display = "";
@@ -367,6 +380,21 @@ async function loadNovels(showTable = true) {
     if (cur && novels.some((b) => String(b.book_id) === cur)) sel.value = cur;
   }
   return novels;
+}
+async function deleteBook(b) {
+  if (!confirm(`确定删除《${b.book_name ?? ""}》（book_id ${b.book_id}）？`)) return;
+  if (!confirm(`再确认一次：作品一旦删除，将无法恢复！\n仍要删除《${b.book_name ?? ""}》吗？`)) return;
+  try {
+    await api("/api/book/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ book_id: b.book_id }),
+    });
+    msg($("msg-novels"), `已删除《${b.book_name ?? ""}》`, "ok");
+    await loadNovels(); // 刷新表格与第 4 步目标书籍下拉
+  } catch (e) {
+    msg($("msg-novels"), `删除失败：${e.message}`, "err");
+  }
 }
 $("btn-novels").onclick = async () => {
   try {
