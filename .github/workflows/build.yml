@@ -53,9 +53,64 @@ jobs:
           name: tomato-writer-app-linux
           path: dist-app/*.AppImage
 
+  build-macos:
+    # dmg 只能在 macOS 上打（要 hdiutil）；本机 Linux 只能出 zip（npm run build:app:mac:local）
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # 没有签名证书（package.json 里 mac.identity=null）。CI 上先试 **ad-hoc 签名**（identity "-"，electron-builder ≥26.3 支持）：
+      # 未签名包在 Apple Silicon 上浏览器下载后常报「已损坏，应移到废纸篓」，右键打开都救不了；ad-hoc 至少能绕开这个。
+      # 注意 `--config.mac.identity=-` 的写法不能加空格（`identity -` 会被解析成 true）。默认 entitlements 已含 disable-library-validation。
+      # ad-hoc 万一失败就回退成完全不签名（旧行为），保证 Release 一定有产物。
+      - name: 打 dmg（arm64 + x64，先试 ad-hoc 签名）
+        run: |
+          npx electron-builder --mac dmg --arm64 --x64 --publish never --config.mac.identity=- \
+            || (echo "::warning::ad-hoc 签名失败，回退为未签名打包" && npx electron-builder --mac dmg --arm64 --x64 --publish never)
+      - name: 失败时把构建日志摘要暴露到 Step Summary（免登录可查）
+        if: failure()
+        run: |
+          LOG=$(ls -t ~/Library/electron-builder/Log/*.log ~/.log/electron-builder/*.log 2>/dev/null | head -1)
+          [ -n "$LOG" ] && tail -c 4000 "$LOG" >> "$GITHUB_STEP_SUMMARY"
+          echo "macOS 构建失败，日志尾部见上方" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tomato-writer-app-macos
+          path: dist-app/*.dmg
+
+  build-macos-legacy:
+    # 老 Mac 兼容包：macOS 10.15（Catalina）。Electron ≥33 不支持 Catalina，这个 job 固定用 Electron 32.3.3（最后支持 10.15 的大版本）。
+    # 产物名带 macos10.15 以区别新包；只打 x64（10.15 没有 Apple Silicon）。新包（build-macos）不受影响。
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: 打老 Mac dmg（x64，Electron 32.3.3，先试 ad-hoc 签名）
+        run: |
+          npm run build:app:mac:legacy -- --config.mac.identity=- \
+            || (echo "::warning::ad-hoc 签名失败，回退为未签名打包" && npm run build:app:mac:legacy)
+      - name: 失败时把构建日志摘要暴露到 Step Summary（免登录可查）
+        if: failure()
+        run: |
+          LOG=$(ls -t ~/Library/electron-builder/Log/*.log ~/.log/electron-builder/*.log 2>/dev/null | head -1)
+          [ -n "$LOG" ] && tail -c 4000 "$LOG" >> "$GITHUB_STEP_SUMMARY"
+          echo "老 Mac 构建失败，日志尾部见上方" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tomato-writer-app-macos-legacy
+          path: dist-app/*macos10.15*.dmg
+
   # 推送 v* 标签（如 v0.1.0）时自动创建 Release 并附带安装包
   release:
-    needs: [build-windows, build-linux]
+    needs: [build-windows, build-linux, build-macos, build-macos-legacy]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -84,7 +139,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           VER=$(node -p "require('./package.json').version")
-          KEEP=("tomato-writer-app-$VER.exe" "tomato-writer-app-$VER.AppImage" "tomato-writer-guide.md")
+          KEEP=("tomato-writer-app-$VER.exe" "tomato-writer-app-$VER.AppImage" "tomato-writer-app-$VER-arm64.dmg" "tomato-writer-app-$VER-x64.dmg" "tomato-writer-app-$VER-x64-macos10.15.dmg" "tomato-writer-guide.md")
           REL_ID=$(curl -s -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$REPO/releases/tags/$TAG" | jq -r .id)
           curl -s -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$REPO/releases/$REL_ID/assets?per_page=100" |
             jq -r '.[] | "\(.id) \(.name)"' | while read -r ID NAME; do

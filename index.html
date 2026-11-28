@@ -130,7 +130,7 @@
   <h2><span class="no">4</span>加载章节 &amp; 批量发布</h2>
   <label>书目录（支持两种结构，自动识别：① articlewriter 约定 <code>&lt;书名&gt;/第NN章-&lt;标题&gt;/NN-&lt;标题&gt;.md</code>，卷目录自动识别；② 平铺结构 <code>&lt;书名&gt;/01.md、02-标题.txt、第3章 标题.md</code> 一文件一章，md/txt 均可，序号/章节名可来自文件名或正文首行；正文自动转 &lt;p&gt; HTML）</label>
   <div style="display:flex;gap:8px">
-    <input id="bk-dir" placeholder="输入书目录路径，或点「浏览…」逐级点选（自动回填上次使用的目录）">
+    <input id="bk-dir" placeholder="输入书目录，或整本一个文档（.txt/.md/.docx）的路径；也可点「浏览…」点选（自动回填上次使用的）">
     <button id="btn-browse" class="ghost" style="white-space:nowrap">浏览…</button>
   </div>
   <div id="browse-panel" style="display:none;margin-top:10px;border:1px solid var(--border);border-radius:8px;padding:10px 12px">
@@ -155,10 +155,12 @@
     <div><label>内容检测方法</label><select id="pub-check"><option value="base" selected>仅基础检测（不限次数）</option><option value="full">全面检测（每章限 2 次，有风险将中止）</option></select></div>
   </div>
   <div class="kv" id="pub-summary">已勾选 0 章</div>
+  <div class="kv" id="pub-volumes">本地卷：未加载</div>
   <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px">
     <div style="display:flex;align-items:center;gap:8px">
-      <span class="kv">volume_id（留空 = 默认卷）</span><input id="chk-volume" style="width:150px">
+      <span class="kv">番茄卷过滤</span><select id="chk-volume" style="width:200px"><option value="">全部卷</option></select>
       <button id="btn-chapters" class="ghost">刷新章节列表</button>
+      <button id="btn-vol-plan" class="ghost" title="只预检不改动：看本地卷会怎么对上番茄的卷（同名复用 / 改名 / 新建）">卷对照预检</button>
     </div>
     <div style="display:flex;align-items:center;gap:8px">
       <button id="btn-publish-all">全书上传（按章节顺序）</button>
@@ -166,12 +168,26 @@
     </div>
   </div>
   <div class="msg" id="msg-publish"></div>
+  <!-- 上传日志窗口：默认 1/4 窗口高、可拖动调高、超出滚动并自动跟随到底部；可清除、可关闭后重新打开 -->
+  <div id="uplog-panel" style="display:none;margin-top:8px;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+    <div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:#23272f;border-bottom:1px solid var(--border)">
+      <b style="font-size:13px">📄 上传日志</b>
+      <span class="kv" id="uplog-count"></span>
+      <span style="flex:1"></span>
+      <span class="hint">拖动右下角可调整高度</span>
+      <button id="btn-uplog-clear" class="ghost" title="清空日志内容">🧹 清除</button>
+      <button id="btn-uplog-reset" class="ghost" title="高度恢复为窗口的 1/4">↕ 恢复高度</button>
+      <button id="btn-uplog-close" class="ghost" title="关闭日志窗口（可用旁边的按钮重新打开）">✕ 关闭</button>
+    </div>
+    <div id="uplog-body" style="height:25vh;min-height:60px;max-height:70vh;overflow:auto;resize:vertical;padding:6px 8px;font-size:12px;line-height:1.5"></div>
+  </div>
+  <button id="btn-uplog-open" class="ghost" style="display:none;margin-top:8px">📄 打开上传日志</button>
   </div>
 
   <div style="margin-top:18px;border-top:1px solid var(--border);padding-top:14px">
     <label>章节总表（本地书目录 × 番茄端已上传，按章节号对齐；选中目标书籍后自动加载远端章节，发布/删除成功后自动刷新）</label>
     <table id="tbl-merged" style="display:none">
-      <thead><tr><th style="width:34px">选</th><th style="width:50px">#</th><th>标题</th><th style="width:170px">状态</th><th style="width:60px">字数</th><th style="width:180px">操作</th></tr></thead>
+      <thead><tr><th style="width:34px">选</th><th style="width:50px">#</th><th style="width:120px">卷</th><th>标题</th><th style="width:170px">状态</th><th style="width:60px">字数</th><th style="width:180px">操作</th></tr></thead>
       <tbody></tbody>
     </table>
     <div class="row" id="merged-actions-row" style="display:none;margin-top:8px;gap:8px;flex-wrap:wrap">
@@ -184,6 +200,7 @@
       <div style="flex:0 0 auto"><label>每页</label><select id="m-pagesize" style="width:110px"><option value="20">20 行</option><option value="50">50 行</option><option value="100">100 行</option></select></div>
       <div style="flex:0 0 auto;align-self:flex-end"><button id="btn-mprev" class="ghost">上一页</button></div>
       <div style="flex:0 0 auto;align-self:flex-end"><button id="btn-mnext" class="ghost">下一页</button></div>
+      <div style="flex:0 0 auto;align-self:flex-end"><label style="font-size:12px" title="上传时自动切到正在上传章节所在的那一页"><input type="checkbox" id="chk-follow" checked> 翻页跟随上传中的章节</label></div>
       <div style="flex:1;align-self:flex-end"><span class="kv" id="merged-pager"></span></div>
     </div>
     <div class="msg" id="msg-verify"></div>
@@ -199,6 +216,71 @@ async function api(path, opts) {
   if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
   return j;
 }
+// 流式接口：后端一行一个 JSON 事件（发布进度），边上传边回调，界面实时更新状态与上传日志
+async function apiStream(path, body, onEvent) {
+  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, stream: 1 }) });
+  const ctype = res.headers.get("content-type") || "";
+  if (!ctype.includes("ndjson")) {
+    // 后端不按流式回（旧版/参数错）→ 按普通 JSON 处理，结果一次性回调
+    const j = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+    if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+    const rs = j.results ?? [];
+    for (const [i, r] of rs.entries()) onEvent({ type: "chap", i, total: rs.length, action: "done", ...r });
+    return;
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let k;
+    while ((k = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, k).trim();
+      buf = buf.slice(k + 1);
+      if (!line) continue;
+      let ev;
+      try {
+        ev = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (ev.type === "error") throw new Error(ev.error || "发布中断");
+      onEvent(ev);
+    }
+  }
+}
+
+// ---------- 上传日志窗口：默认窗口高度的 1/4、可拖右下角调高、超出出滚动条并自动跟随到底部；可清除 / 关闭 / 重新打开 ----------
+function uplog(text, cls) {
+  const body = $("uplog-body");
+  if (!body) return;
+  const follow = body.scrollHeight - body.scrollTop - body.clientHeight < 60; // 用户往上翻看时不再强行拉回底部
+  const div = document.createElement("div");
+  div.style.cssText =
+    cls === "err" ? "color:var(--err)" : cls === "ok" ? "color:var(--ok)" : cls === "warn" ? "color:var(--warn)" : "";
+  div.textContent = text;
+  body.appendChild(div);
+  $("uplog-count").textContent = `${body.childElementCount} 行`;
+  if (follow) body.scrollTop = body.scrollHeight;
+}
+function openUplog() {
+  $("uplog-panel").style.display = "";
+  $("btn-uplog-open").style.display = "none";
+}
+function closeUplog() {
+  $("uplog-panel").style.display = "none";
+  $("btn-uplog-open").style.display = "";
+}
+function clearUplog() {
+  $("uplog-body").innerHTML = "";
+  $("uplog-count").textContent = "";
+}
+$("btn-uplog-open").onclick = openUplog;
+$("btn-uplog-close").onclick = closeUplog;
+$("btn-uplog-clear").onclick = clearUplog;
+$("btn-uplog-reset").onclick = () => ($("uplog-body").style.height = "25vh"); // 恢复成窗口高度的 1/4
 
 // ① 状态
 let appMode = "console"; // 由 /api/status 的 appMode 字段决定：app=Electron 应用内登录 / console=外部浏览器
@@ -567,14 +649,24 @@ $("btn-create").onclick = async () => {
 
 // ④ 从书目录加载章节（与批量发布同卡：选目录 + 浏览 + 加载；表格统一在本卡下方合并表展示）
 let chapters = [];
+let localVolumes = []; // 本地卷（卷.md 声明 ∪ 卷目录），顺序就是发布顺序
 $("btn-split").onclick = async () => {
   try {
     const p = encodeURIComponent($("bk-dir").value.trim());
     const r = await api(`/api/book-chapters?path=${p}`);
     chapters = r.chapters;
-    msg($("msg-split"), `加载 ${chapters.length} 章`, "ok");
+    localVolumes = r.volumes ?? [];
+    const volText = localVolumes.length
+      ? `卷 ${localVolumes.length} 个：${localVolumes.map((v) => `${v.name}(${v.count}章${v.declared ? "" : "·未在卷.md声明"})`).join("、")}`
+      : "无卷（章节都在书根）";
+    const warn = (r.warnings ?? []).join("；");
+    msg(
+      $("msg-split"),
+      `${r.single_doc ? "从文档拆出" : "加载"} ${chapters.length} 章 · ${volText}${r.volume_md ? ` · 卷.md：${r.volume_md}` : ""}${warn ? `\n⚠️ ${warn}` : ""}`,
+      warn ? "warn" : "ok"
+    );
     const bookId = $("pub-book").value;
-    if (bookId) loadRemoteChapters(bookId); // 重建合并表（本地 × 远端按章节号对齐）
+    if (bookId) loadRemoteChapters(bookId); // 重建合并表（本地 × 远端按卷 + 章节号对齐）
     else msg($("msg-verify"), "已加载本地章节；请在上方选择目标书籍以生成合并表", "warn");
   } catch (e) { msg($("msg-split"), e.message, "err"); }
 };
@@ -624,7 +716,21 @@ async function loadBrowse(p) {
       list.appendChild(browseRow("📁 ..（上一级）", false, () => loadBrowse(r.parent)));
     for (const d of r.dirs)
       list.appendChild(browseRow(`📁 ${d.name}`, d.isBook, () => loadBrowse(`${r.path}/${d.name}`)));
-    if (!r.dirs.length && !r.parent)
+    // 文档条目：整本一个文件（txt/md/docx）直接点它就按「单文档模式」加载
+    if ((r.files ?? []).some((f) => !f.legacy))
+      list.append(Object.assign(document.createElement("div"), { className: "hint", textContent: "📄 文档：点文件名即按「单文档模式」加载（按「第N章」拆章）" }));
+    for (const f of r.files ?? [])
+      list.appendChild(
+        browseRow(`${f.legacy ? "⚠️" : "📄"} ${f.name}${f.legacy ? "（旧版 .doc，读不了，请另存为 .docx）" : ""}`, false, () => {
+          if (f.legacy) return;
+          const full = `${r.path}/${f.name}`;
+          $("bk-dir").value = full;
+          $("browse-panel").style.display = "none";
+          saveBookDir(full);
+          $("btn-split").click();
+        })
+      );
+    if (!r.dirs.length && !(r.files ?? []).length && !r.parent)
       list.append(Object.assign(document.createElement("div"), { className: "hint", textContent: r.drives && r.drives.length ? "盘根无子目录，可用上方按钮切换磁盘" : "没有子目录" }));
   } catch (e) { msg($("msg-split"), e.message, "err"); }
 }
@@ -632,9 +738,10 @@ $("btn-browse").onclick = async () => {
   $("browse-panel").style.display = "";
   const cur = $("bk-dir").value.trim();
   try {
-    // 若当前值本身就是书目录，直接上跳一级，方便在兄弟目录里点选（盘根书目录则留在本盘）
+    // 若当前值本身就是书目录，直接上跳一级，方便在兄弟目录里点选（盘根书目录则留在本盘）；
+    // 当前值是「整本一个文档」时留在文档所在目录，方便直接点那个文件
     const probe = await api(`/api/browse?path=${encodeURIComponent(cur || "")}`);
-    loadBrowse(probe.isBook ? probe.parent || probe.path : cur);
+    loadBrowse(probe.from_file ? probe.path : probe.isBook ? probe.parent || probe.path : cur);
   } catch { loadBrowse(cur); }
 };
 $("btn-browse-close").onclick = () => ($("browse-panel").style.display = "none");
@@ -653,8 +760,10 @@ function saveBookDir(dir) {
 }
 $("bk-dir").onchange = () => saveBookDir($("bk-dir").value);
 
-// ⑤ 批量发布（mode: "sel"=按勾选 / "all"=全书按章节顺序）
-async function doPublish(bookId, items, mode) {
+// ⑤ 批量发布（mode: "sel"=按勾选 / "all"=全书按章节顺序 / "one"=单章）
+// itemRows：与 items 同序的章节总表行，用来边上传边更新「状态」列并把当前页跟到正在上传的章节
+let publishing = false;
+async function doPublish(bookId, items, mode, itemRows = []) {
   const useAi = $("pub-ai").value;
   const checkType = $("pub-check").value;
   const aiText = useAi === "1" ? "是（使用了AI工具）" : "否（未使用AI）";
@@ -662,6 +771,16 @@ async function doPublish(bookId, items, mode) {
   const nUpd = items.filter((x) => x.item_id).length;
   const nNew = items.length - nUpd;
   const split = nUpd && nNew ? `（${nUpd} 章更新已有 / ${nNew} 章全新上传）` : nUpd ? `（均为更新已有章节）` : "";
+  // 卷分组提示：让「先书根、再各卷按 卷.md 顺序」这件事在确认框里看得见
+  const volOrder = [];
+  for (const x of items) {
+    const v = String(x.local_volume ?? "");
+    if (!volOrder.some((g) => g.name === v)) volOrder.push({ name: v, count: 0 });
+    volOrder.find((g) => g.name === v).count++;
+  }
+  const volText = volOrder.length > 1 || volOrder[0]?.name
+    ? "\n卷顺序：" + volOrder.map((g) => `${g.name || "（书根/默认卷）"} ${g.count}章`).join(" → ")
+    : "";
   const head = mode === "all"
     ? `确认向 book_id=${bookId} 按章节顺序发布全部 ${items.length} 章${split}？`
     : mode === "one"
@@ -669,24 +788,60 @@ async function doPublish(bookId, items, mode) {
       : `确认向 book_id=${bookId} 发布所选 ${items.length} 章${split}？`;
   const shown = items.slice(0, 15).map((x) => "· " + x.title).join("\n");
   const more = items.length > 15 ? `\n… 等共 ${items.length} 章` : "";
-  if (!confirm(`${head}\n是否使用AI申报：${aiText}\n内容检测方法：${chkText}\n${shown}${more}`)) return;
+  if (!confirm(`${head}\n是否使用AI申报：${aiText}\n内容检测方法：${chkText}${volText}\n${shown}${more}`)) return;
+  publishing = true;
   $("btn-publish").disabled = true;
   $("btn-publish-all").disabled = true;
-  msg($("msg-publish"), `发布中（逐章提交，可能需要一点时间）…`, "warn");
+  const chk = (x) => {
+    const parts = [];
+    const b = x.checks?.base, f = x.checks?.full;
+    if (b) parts.push(b.error ? `基础检测请求失败（跳过）` : b.risks?.length ? `基础检测有 ${b.risks.length} 处质量风险（仍已发布）` : "基础检测通过");
+    if (f) parts.push(f.error ? `全面检测请求失败（视为通过）` : f.risks?.length ? `全面检测有 ${f.risks.length} 处风险` : "全面检测通过");
+    return parts.length ? `　[${parts.join("；")}]` : "";
+  };
+  const total = items.length;
+  openUplog();
+  uplog(`▶ ${mode === "all" ? "全书上传" : mode === "one" ? "单章上传" : "上传所选"}共 ${total} 章 · ${new Date().toLocaleTimeString()} · AI申报：${aiText} · ${chkText}`, "warn");
+  msg($("msg-publish"), `发布中 0/${total}（逐章提交，状态列与下方上传日志实时更新）…`, "warn");
+  let okCount = 0;
+  let failCount = 0;
+  const onEvent = (ev) => {
+    if (ev.type === "log") { uplog(`ℹ️ ${ev.text}`); return; }
+    if (ev.type === "start") { uplog(`已连上番茄，开始逐章上传（番茄按提交顺序追加章节）`); return; }
+    if (ev.type !== "chap") return;
+    const row = itemRows[ev.i];
+    const tag = `${ev.i + 1}/${total}`;
+    if (ev.action === "start") {
+      if (row) {
+        setRowState(row, "warn", "⏳ 上传中…");
+        followRowPage(row); // 当前页跟到正在上传的章节
+      }
+      uplog(`… ${tag} ${ev.title}：提交中`);
+      return;
+    }
+    if (ev.ok) okCount++;
+    else failCount++;
+    uplog(`${ev.ok ? "✅" : "❌"} ${tag} ${ev.title}（${ev.updated ? "已更新" : ev.ok ? "新发布" : "失败"}${ev.volume ? ` · 卷「${ev.volume}」` : ""}${ev.itemId ? `，item_id=${ev.itemId}` : ""}）${ev.ok ? "" : `：${ev.error}`}${chk(ev)}`, ev.ok ? "ok" : "err");
+    if (row) setRowState(row, ev.ok ? "ok" : "err", ev.ok ? `✅ ${ev.updated ? "已更新" : "已上传"}` : "❌ 失败");
+    msg($("msg-publish"), `发布中 ${okCount + failCount}/${total}（成功 ${okCount} / 失败 ${failCount}）…`, failCount ? "err" : "warn");
+  };
   try {
-    const r = await api("/api/publish", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ book_id: bookId, items, use_ai: Number(useAi), check_type: checkType }) });
-    const chk = (x) => {
-      const parts = [];
-      const b = x.checks?.base, f = x.checks?.full;
-      if (b) parts.push(b.error ? `基础检测请求失败（跳过）` : b.risks?.length ? `基础检测有 ${b.risks.length} 处质量风险（仍已发布）` : "基础检测通过");
-      if (f) parts.push(f.error ? `全面检测请求失败（视为通过）` : f.risks?.length ? `全面检测有 ${f.risks.length} 处风险` : "全面检测通过");
-      return parts.length ? `　[${parts.join("；")}]` : "";
-    };
-    const lines = r.results.map((x) => (x.ok ? `✅ ${x.title}（${x.updated ? "已更新" : "新发布"}，item_id=${x.itemId}）${chk(x)}` : `❌ ${x.title}：${x.error}${chk(x)}`));
-    const allOk = r.results.every((x) => x.ok);
-    msg($("msg-publish"), lines.join("\n") + (allOk ? "\n全部成功！章节总表已自动刷新。" : "\n已停止（遇错即停），请处理后重试剩余章节。"), allOk ? "ok" : "err");
-    if (allOk) loadRemoteChapters(bookId); // 发布后自动刷新合并表
-  } catch (e) { msg($("msg-publish"), `❌ ${e.message}`, "err"); }
+    await apiStream("/api/publish", { book_id: bookId, items, use_ai: Number(useAi), check_type: checkType }, onEvent);
+  } catch (e) {
+    failCount++;
+    uplog(`❌ 中断：${e.message}`, "err");
+  }
+  const allOk = failCount === 0 && okCount === total;
+  uplog(`■ 结束：成功 ${okCount} / ${total}${allOk ? "" : "，已停止（遇错即停），可处理后重试剩余章节"}`, allOk ? "ok" : "err");
+  msg(
+    $("msg-publish"),
+    allOk
+      ? `✅ 全部 ${total} 章完成（详见下方「上传日志」，可清除 / 关闭）`
+      : `⚠️ 成功 ${okCount} / ${total} 章，失败 ${failCount} 章（遇错即停）：详见下方「上传日志」，处理后重试剩余章节`,
+    allOk ? "ok" : "err"
+  );
+  if (bookId) loadRemoteChapters(bookId, { keepPage: true, keepSel: true }); // 只刷新章节状态：保留当前页与勾选
+  publishing = false;
   $("btn-publish").disabled = false;
   $("btn-publish-all").disabled = false;
 }
@@ -695,7 +850,7 @@ $("btn-publish").onclick = async () => {
   if (!bookId) { msg($("msg-publish"), "❌ 请先选择目标书籍（列表为空可点「刷新书籍列表」或先在第 3 步建书）", "err"); return; }
   const rows = mergedRows.filter((r) => mSelSet.has(r.key) && r.local);
   if (!rows.length) { msg($("msg-publish"), "❌ 没有勾选任何可发布的本地章节", "err"); return; }
-  await doPublish(bookId, rows.map(rowItem), "sel");
+  await doPublish(bookId, rows.map(rowItem), "sel", rows);
 };
 // 全书上传：不看勾选状态，把第 4 步加载的本地章节按章节顺序全部发布（远端已存在的自动走更新路径）
 $("btn-publish-all").onclick = async () => {
@@ -703,52 +858,103 @@ $("btn-publish-all").onclick = async () => {
   if (!bookId) { msg($("msg-publish"), "❌ 请先选择目标书籍（列表为空可点「刷新书籍列表」或先在第 3 步建书）", "err"); return; }
   if (!chapters.length) { msg($("msg-publish"), "❌ 请先在第 4 步加载书目录章节", "err"); return; }
   const rowByLocalIdx = new Map(mergedRows.filter((r) => r.local).map((r) => [r.localIdx, r]));
+  const itemRows = [];
   const items = chapters.map((c, i) => {
     const row = rowByLocalIdx.get(i);
-    const it = { title: c.publishTitle, content: c.content };
+    itemRows.push(row ?? null); // 与 items 同序，发布时按行更新状态
+    const it = { title: c.publishTitle, content: c.content, local_volume: String(c.vol ?? "") };
     if (row?.remote) { it.item_id = vId(row.remote); it.volume_id = String(row.remote.volume_id ?? ""); }
     return it;
   });
-  await doPublish(bookId, items, "all");
+  await doPublish(bookId, items, "all", itemRows);
 };
 
-// ⑤ 章节总表：本地书目录 × 番茄端已上传，按章节号对齐（前端分页 20/50/100；所有行常驻 DOM，翻页只切显隐）
+// ⑤ 章节总表：本地书目录 × 番茄端已上传。有卷时按「卷 + 章节」对齐，无卷时按章节号对齐（前端分页 20/50/100；所有行常驻 DOM，翻页只切显隐）
 let remoteList = [];
-let mergedRows = []; // {key, num, local, remote, localIdx}
+let remoteVols = []; // 番茄卷列表（显示顺序：第 1 卷在前）
+let mergedRows = []; // {key, num, vol, volRank, local, remote, localIdx}
 let mergedTrs = []; // 主行 tr（与 mergedRows 同序）
+let mergedTrByKey = new Map(); // 行 key → tr（发布时按行更新状态列，不必整表重建）
 let mSelSet = new Set(); // 勾选态存行 key 集合：翻页不丢
 let mPage = 1;
+let mPageBook = ""; // 当前页属于哪本书：换书才回到第 1 页，同书刷新保留当前页
 let mPageSize = 20;
 const NUM_RE = /第\s*(\d+)\s*章/;
 function vId(c) { return String(c.item_id ?? c.id ?? ""); }
 function vTitle(c) { return c.title ?? c.chapter_title ?? ""; }
 function extractNum(title) { const m = String(title ?? "").match(NUM_RE); return m ? Number(m[1]) : null; }
-// 按章节号对齐本地与远端；重复号不覆盖、落为独立行
-function buildMerged() {
-  const byNum = new Map();
+// 番茄章节上的卷名：优先自带 volume_name，否则按 volume_id 查（老接口/单卷过滤时可能缺）
+function remoteVolName(c) {
+  const n = String(c?.volume_name ?? "").trim();
+  if (n) return n;
+  const hit = remoteVols.find((v) => String(v.volume_id) === String(c?.volume_id ?? ""));
+  return hit ? String(hit.volume_name ?? "") : "";
+}
+function normTitle(t) { return String(t ?? "").replace(/\s+/g, ""); }
+// 去掉「第N章/N节」序号前缀后的标题（卷模式下发布标题按全书连续编号，去序号后才能和番茄上旧标题对上）
+const TITLE_NUM_RE = /^第?\s*[0-9零一二三四五六七八九十百两]+\s*[章节回]\s*[·:：\-—.、\s　]*/;
+function coreTitle(t) { return normTitle(String(t ?? "").replace(TITLE_NUM_RE, "")); }
+// 远端章节的「对齐卷名」：番茄卷名和本地卷名可能还没统一（首次上传前番茄还是「第一卷：默认」）。
+// 规则与后端 syncVolumes 一致：同名优先，否则按卷的位置认领（番茄第 i 卷 ↔ 本地第 i 卷）
+function alignVolName(c) {
+  const name = remoteVolName(c);
+  if (!name || localVolumes.some((v) => v.name === name)) return name;
+  const i = remoteVols.findIndex((v) => String(v.volume_id) === String(c?.volume_id ?? ""));
+  return i >= 0 && i < localVolumes.length ? localVolumes[i].name : name;
+}
+function volRankOf(name) {
+  if (!name) return 0;
+  const i = localVolumes.findIndex((v) => v.name === name);
+  if (i >= 0) return i + 1;
+  return localVolumes.length + 1; // 番茄独有的卷排在本地卷之后
+}
+// 对齐规则：①「卷 + 章节标题」完全同名 ②「卷 + 去序号标题」（章节号连续化/改动后仍能对上）
+// ③「同卷 + 章节号」；完全没有卷时才退回「章节号」全局对齐（旧行为）
+function buildMerged(keepSel = null) {
+  const byTitle = new Map(); // 卷\0标题 → 行
+  const byCore = new Map(); // 卷\0去序号标题 → 行
+  const byNumVol = new Map(); // 卷\0章号 → 行
+  const byNum = new Map(); // 章号 → 行（无卷模式）
   const rows = [];
   chapters.forEach((c, i) => {
     const num = extractNum(c.publishTitle);
-    const row = { key: "L" + i, num, local: c, remote: null, localIdx: i };
+    const vol = String(c.vol ?? "");
+    const row = { key: "L" + i, num, vol, volRank: volRankOf(vol), local: c, remote: null, localIdx: i };
     rows.push(row);
-    if (num !== null && !byNum.has(num)) byNum.set(num, row);
+    byTitle.set(vol + "\0" + normTitle(c.publishTitle), row);
+    const ck = vol + "\0" + coreTitle(c.publishTitle);
+    if (ck && !byCore.has(ck)) byCore.set(ck, row);
+    if (num !== null) {
+      const nk = vol + "\0" + num;
+      if (!byNumVol.has(nk)) byNumVol.set(nk, row);
+      if (!localVolumes.length && !byNum.has(num)) byNum.set(num, row);
+    }
   });
   for (const r of remoteList) {
+    const vol = alignVolName(r); // 对齐用卷名（可能是改名前的番茄名 → 映射到本地卷）
     const num = extractNum(vTitle(r));
-    let row = num !== null ? byNum.get(num) : undefined;
+    const ck = vol + "\0" + coreTitle(vTitle(r));
+    let row =
+      byTitle.get(vol + "\0" + normTitle(vTitle(r))) ??
+      (ck ? byCore.get(ck) : undefined) ??
+      byNumVol.get(vol + "\0" + num) ??
+      (num !== null ? byNum.get(num) : undefined);
     if (row && !row.remote) row.remote = r;
     else {
-      row = { key: "R" + vId(r), num, local: null, remote: r, localIdx: -1 };
+      row = { key: "R" + vId(r), num, vol, volRank: volRankOf(vol), local: null, remote: r, localIdx: -1 };
       rows.push(row);
     }
   }
-  rows.sort((a, b) => (a.num ?? Infinity) - (b.num ?? Infinity));
+  rows.sort((a, b) => a.volRank - b.volRank || (a.num ?? Infinity) - (b.num ?? Infinity));
   mergedRows = rows;
-  mSelSet = new Set(rows.filter((r) => r.local).map((r) => r.key)); // 本地行默认勾选、番茄端独有行默认不勾
+  // keepSel：刷新（发布/删除后）保留原勾选；换书/重新加载时按默认「本地行全勾、仅番茄端行不勾」
+  mSelSet = keepSel
+    ? new Set(rows.map((r) => r.key).filter((k) => keepSel.has(k)))
+    : new Set(rows.filter((r) => r.local).map((r) => r.key));
 }
-// 行 → 发布 item：有远端则带 item_id/volume_id（服务端走更新路径），否则全新上传
+// 行 → 发布 item：有远端则带 item_id/volume_id（服务端走更新路径），否则全新上传；local_volume 让服务端负责卷对照/建卷
 function rowItem(row) {
-  const it = { title: row.local.publishTitle, content: row.local.content };
+  const it = { title: row.local.publishTitle, content: row.local.content, local_volume: String(row.local.vol ?? "") };
   if (row.remote) { it.item_id = vId(row.remote); it.volume_id = String(row.remote.volume_id ?? ""); }
   return it;
 }
@@ -760,6 +966,7 @@ function renderMerged() {
   const tb = $("tbl-merged").querySelector("tbody");
   tb.innerHTML = "";
   mergedTrs = [];
+  mergedTrByKey = new Map();
   for (const row of mergedRows) {
     const tr = document.createElement("tr");
     const hints = [];
@@ -772,14 +979,21 @@ function renderMerged() {
     } else if (row.local) status = `<span style="color:var(--warn)">未上传</span>`;
     else status = `<span style="color:var(--dim)">仅番茄端</span>`;
     const wc = row.local ? row.local.wordCount : (row.remote?.word_number ?? "-");
+    // 卷：本地卷名 / 番茄卷名不一致时提示（发布时服务端会按本地卷名改名或建卷）
+    const lv = String(row.local?.vol ?? "");
+    const rv = row.remote ? remoteVolName(row.remote) : "";
+    const volCell = lv || rv
+      ? `${lv || "（书根）"}${rv && rv !== lv ? `<div class="hint">番茄：${rv}</div>` : ""}`
+      : "—";
     tr.innerHTML = `<td><input type="checkbox" class="mck" data-key="${row.key}" ${mSelSet.has(row.key) ? "checked" : ""}></td>
-      <td>${row.num ?? "—"}</td>
+      <td>${row.num ?? "—"}</td><td>${volCell}</td>
       <td>${row.local ? row.local.publishTitle : vTitle(row.remote)}${hints.length ? `<div class="hint">${hints.join(" · ")}</div>` : ""}</td>
       <td>${status}</td><td>${wc}</td>
       <td style="white-space:nowrap"><button class="ghost m-up" data-key="${row.key}" ${row.local ? "" : "disabled"} title="${row.remote ? "更新番茄端已有章节" : "上传到番茄端（全新章节）"}">${row.local ? (row.remote ? "↻ 更新" : "⬆ 上传") : "—"}</button>
         <button class="ghost m-del" data-key="${row.key}" ${row.remote ? "" : "disabled"} style="color:var(--err)" title="删除番茄端章节（不可恢复）">✕</button></td>`;
     tb.appendChild(tr);
     mergedTrs.push(tr);
+    mergedTrByKey.set(row.key, tr);
   }
   $("tbl-merged").style.display = mergedRows.length ? "" : "none";
   $("merged-actions-row").style.display = mergedRows.length ? "" : "none";
@@ -804,6 +1018,28 @@ function showMergedPage() {
   $("btn-mprev").disabled = mPage <= 1;
   $("btn-mnext").disabled = mPage >= pages;
 }
+// 上传过程中只改这一行的「状态」列（不重建整表，避免丢滚动位置）
+function setRowState(row, kind, text) {
+  const tr = mergedTrByKey.get(row.key);
+  if (!tr || !tr.children[4]) return;
+  const color = kind === "warn" ? "var(--warn)" : kind === "ok" ? "var(--ok)" : "var(--err)";
+  tr.children[4].innerHTML = `<span style="color:${color}">${text}</span>`;
+  const btn = tr.querySelector(".m-up");
+  if (btn) btn.disabled = kind === "warn";
+}
+// 当前页跟到正在上传的章节所在页（分页表下让它可见）
+function followRowPage(row) {
+  const box = $("chk-follow");
+  if (box && !box.checked) return;
+  const i = mergedRows.indexOf(row);
+  if (i < 0) return;
+  const p = Math.floor(i / mPageSize) + 1;
+  if (p !== mPage) {
+    mPage = p;
+    showMergedPage();
+  }
+  mergedTrByKey.get(row.key)?.scrollIntoView({ block: "nearest" });
+}
 $("tbl-merged").addEventListener("change", (e) => {
   const ck = e.target.closest(".mck");
   if (!ck) return;
@@ -819,10 +1055,11 @@ $("tbl-merged").onclick = (e) => {
   if (!b || b.disabled) return;
   const row = mergedRows.find((r) => r.key === b.dataset.key);
   if (!row) return;
+  if (publishing) { msg($("msg-publish"), "⏳ 正在上传中（状态列与「上传日志」实时更新），请等本轮结束再操作", "warn"); return; }
   if (b.classList.contains("m-up")) {
     const bookId = $("pub-book").value;
     if (!bookId) { msg($("msg-publish"), "❌ 请先选择目标书籍", "err"); return; }
-    doPublish(bookId, [rowItem(row)], "one");
+    doPublish(bookId, [rowItem(row)], "one", [row]);
   } else if (b.classList.contains("m-del")) {
     doDeleteMerged([row], "one");
   }
@@ -854,24 +1091,56 @@ async function doDeleteMerged(rows, label) {
     }
   }
   btns.forEach((b) => ($(b).disabled = false));
-  msg($("msg-verify"), lines.join("\n") + (okAll ? "\n删除完成，列表已刷新。" : "\n已停止（遇错即停），列表已刷新、勾选已重置，请重新勾选剩余章节。"), okAll ? "ok" : "err");
-  loadRemoteChapters(bookId);
+  msg($("msg-verify"), lines.join("\n") + (okAll ? "\n删除完成，状态已刷新（保留当前页）。" : "\n已停止（遇错即停），状态已刷新、被删的行已移除，请重新勾选剩余章节。"), okAll ? "ok" : "err");
+  loadRemoteChapters(bookId, { keepPage: true, keepSel: true });
 }
 $("btn-mdel-sel").onclick = () => doDeleteMerged(mergedRows.filter((r) => mSelSet.has(r.key)), "sel");
 $("btn-mdel-all").onclick = () => doDeleteMerged([...mergedRows], "all");
-// 加载目标书的番茄端章节 → 重建合并表（换书/刷新后重置默认勾选）
-async function loadRemoteChapters(bookId) {
+// 加载目标书的番茄端章节 → 重建合并表（换书/刷新后重置默认勾选）；顺带把番茄卷列表填进过滤下拉
+async function loadRemoteChapters(bookId, opts = {}) {
   if (!bookId) { msg($("msg-verify"), "❌ 先选择目标书籍", "err"); return; }
   try {
-    const q = new URLSearchParams({ book_id: bookId, volume_id: $("chk-volume").value.trim() });
+    const vr = await api(`/api/volumes?book_id=${encodeURIComponent(bookId)}`).catch(() => ({ volumes: [] }));
+    remoteVols = vr.volumes ?? [];
+    const sel = $("chk-volume");
+    const keep = sel.value;
+    sel.innerHTML = "";
+    sel.append(new Option("全部卷", ""));
+    for (const v of remoteVols)
+      sel.append(new Option(`${v.volume_name}（${v.item_count} 章）`, String(v.volume_id)));
+    if ([...sel.options].some((o) => o.value === keep)) sel.value = keep;
+    const q = new URLSearchParams({ book_id: bookId, volume_id: sel.value });
     const data = await api(`/api/chapters?${q}`);
     remoteList = Array.isArray(data) ? data : [];
-    buildMerged();
-    mPage = 1;
+    for (const it of remoteList) if (!it.volume_name) it.volume_name = remoteVolName(it);
+    buildMerged(opts.keepSel ? mSelSet : null);
+    if (mPageBook !== bookId) {
+      mPage = 1; // 只有换书才回到第 1 页；同书刷新（发布/删除/手动刷新）保留当前页
+      mPageBook = bookId;
+    }
+    const keepScroll = window.scrollY;
     renderMerged();
+    if (opts.keepPage) window.scrollTo(0, keepScroll); // 只刷新章节状态，不跳页、不跳滚动位置
+    $("pub-volumes").textContent = `番茄端卷 ${remoteVols.length} 个：${remoteVols.map((v) => `${v.volume_name}(${v.item_count}章)`).join("、") || "无"}`;
   } catch (e) { msg($("msg-verify"), e.message, "err"); }
 }
-$("btn-chapters").onclick = () => loadRemoteChapters($("pub-book").value);
+$("btn-chapters").onclick = () => loadRemoteChapters($("pub-book").value, { keepPage: true, keepSel: true });
+$("chk-volume").onchange = () => loadRemoteChapters($("pub-book").value);
+// 卷对照预检：只预检不改动，看本地卷会怎么对上番茄卷（同名复用 / 按位置改名 / 待新建）
+$("btn-vol-plan").onclick = async () => {
+  const bookId = $("pub-book").value;
+  if (!bookId) { msg($("msg-publish"), "❌ 请先选择目标书籍", "err"); return; }
+  if (!localVolumes.length) { msg($("msg-publish"), "❌ 本地没有卷：书目录里既没有 卷.md 也没有卷目录", "err"); return; }
+  try {
+    const r = await api("/api/volumes/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ book_id: bookId, volume_names: localVolumes.map((v) => v.name), dry_run: true }),
+    });
+    const lines = r.volumes.map((v) => `本地「${v.local}」 → 番茄「${v.volume_name || "（新建）"}」${v.volume_id ? `(${v.volume_id})` : ""}：${v.action}`);
+    msg($("msg-publish"), ["卷对照预检（未改动番茄）：", ...lines, ...(r.actions ?? [])].join("\n"), "ok");
+  } catch (e) { msg($("msg-publish"), `卷对照预检失败：${e.message}`, "err"); }
+};
 $("m-pagesize").onchange = () => { mPageSize = Number($("m-pagesize").value); mPage = 1; showMergedPage(); };
 $("btn-mprev").onclick = () => { if (mPage > 1) { mPage--; showMergedPage(); } };
 $("btn-mnext").onclick = () => { mPage++; showMergedPage(); };

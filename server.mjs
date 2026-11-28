@@ -13,6 +13,7 @@ import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer-core";
 
@@ -141,6 +142,14 @@ async function apiGet(p, params = {}) {
   const env = auth();
   const qs = new URLSearchParams({ ...COMMON, ...flat(params) }).toString();
   const res = await fetch(`${BASE}${p}?${qs}`, { headers: headers(env) });
+  return parse(res, p);
+}
+
+// 参数走 query 的 POST（番茄卷接口只认这种：实测 add_volume / modify/v0 传 JSON body 一律 code=-2 参数有误）
+async function apiPostQuery(p, params = {}) {
+  const env = auth();
+  const qs = new URLSearchParams({ ...COMMON, ...flat(params) }).toString();
+  const res = await fetch(`${BASE}${p}?${qs}`, { method: "POST", headers: headers(env) });
   return parse(res, p);
 }
 
@@ -408,12 +417,23 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
 // 序号与标题优先取文件名，取不到再看正文首行（第X章 标题，支持中文数字），再不行按排序续号。
 
 const AUX_SUFFIXES = ["-大纲", "-场景", "-人物", "-人物关系", "-信息", "-摘要"];
+// 不是正文的文档：卷.md 这类配置文件 + 带辅助后缀的笔记（大纲/场景/人物…），平铺与浏览都要排除
+const AUX_DOC_NAMES = /^(卷|目录|简介|封面|书名)$/i;
+const isAuxDoc = (name) => {
+  const base = name.replace(/\.(md|txt|docx|doc)$/i, "");
+  return AUX_DOC_NAMES.test(base) || AUX_SUFFIXES.some((s) => base.endsWith(s));
+};
 const CHAPTER_DIR_RE = /^第(\d+)章-(.+)$/;
-const FLAT_FILE_RE = /\.(md|txt)$/i;
+// 正文文件：md/txt 直读；.docx 自己解 zip 读（见 readNovelText）；旧版 .doc 只报错不静默跳过
+const FLAT_FILE_RE = /\.(md|txt|docx)$/i;
+const NOVEL_FILE_RE = /\.(md|txt|docx)$/i;
+const DOC_LEGACY_RE = /\.doc$/i;
 const CN_DIGITS = { 零: 0, 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 两: 2 };
 const CN_NUM_RE = /^([0-9]+|[零一二三四五六七八九十百两]+)$/;
 // 「第N章/第N回」前缀 + 剩余标题
 const DI_TITLE_RE = /^第\s*([0-9零一二三四五六七八九十百两]+)\s*[章回]\s*[·:：\-—.、\s　]*(.*)$/;
+// 「N章/N节/N回 标题」不带「第」字的写法（01卷-03章-标题 这种平铺命名很常见）
+const CHAPTER_BARE_RE = /^([0-9]{1,4}|[零一二三四五六七八九十百两]+)\s*[章节回]\s*[·:：\-—.、\s　]*(.*)$/;
 // 「N」或「N-标题 / N.标题 / N 标题」开头带阿拉伯数字
 const NUM_TITLE_RE = /^([0-9]{1,4})\s*[.:：、\-—\s　]*(.*)$/;
 
@@ -432,8 +452,16 @@ function cnToNum(s) {
 }
 
 function stripChapterPrefix(title) {
-  return String(title || "").replace(DI_TITLE_RE, (_, _n, rest) => rest).trim();
+  return String(title || "")
+    .replace(DI_TITLE_RE, (_, _n, rest) => rest)
+    .replace(CHAPTER_BARE_RE, (_, _n, rest) => rest)
+    .trim();
 }
+
+// 章节标题的「去序号」形态（第N章/N节 前缀都剥掉 + 去空白）：
+// 本地与番茄章节对齐用 —— 卷模式下发布标题会按全书连续编号，去掉序号后仍能对上番茄上已有的旧标题
+const CHAPTER_NUM_PREFIX_RE = /^第?\s*[0-9零一二三四五六七八九十百两]+\s*[章节回]\s*[·:：\-—.、\s　]*/;
+const chapterCore = (t) => String(t ?? "").replace(CHAPTER_NUM_PREFIX_RE, "").replace(/\s+/g, "");
 
 function firstMeaningfulLine(text) {
   for (const line of text.split(/\r?\n/)) {
@@ -443,30 +471,212 @@ function firstMeaningfulLine(text) {
   return "";
 }
 
-// 平铺模式：目录下直接放章节文件（md/txt），一文件一章
-function listFlatChapters(bookDir) {
-  let files;
-  try {
-    files = fs
-      .readdirSync(bookDir, { withFileTypes: true })
-      .filter((e) => e.isFile() && FLAT_FILE_RE.test(e.name) && !e.name.startsWith("."))
-      .map((e) => e.name);
-  } catch {
-    return [];
+// ---------- 正文文件读取：md/txt 直读，.docx 自解（零依赖：手解 zip + zlib） ----------
+function zipEntries(buf) {
+  // 从「中央目录结尾记录」(EOCD) 倒查，再按中央目录项拿到每个文件在 zip 里的位置
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= 0 && i >= buf.length - 65558; i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
   }
-  files.sort((a, b) => a.localeCompare(b, "zh", { numeric: true, sensitivity: "base" })); // 自然序：2 < 10
+  if (eocd < 0) throw new Error("不是有效的 zip/docx 文件");
+  const count = buf.readUInt16LE(eocd + 10);
+  let off = buf.readUInt32LE(eocd + 16);
   const out = [];
-  let lastNum = 0;
-  for (const name of files) {
-    const base = name.replace(FLAT_FILE_RE, "");
+  for (let n = 0; n < count; n++) {
+    if (buf.readUInt32LE(off) !== 0x02014b50) break;
+    const entry = {
+      method: buf.readUInt16LE(off + 10),
+      compSize: buf.readUInt32LE(off + 20),
+      localOff: buf.readUInt32LE(off + 42),
+      name: buf.toString("utf8", off + 46, off + 46 + buf.readUInt16LE(off + 28)),
+    };
+    out.push(entry);
+    off += 46 + buf.readUInt16LE(off + 28) + buf.readUInt16LE(off + 30) + buf.readUInt16LE(off + 32);
+  }
+  return out;
+}
+
+function zipExtract(buf, entry) {
+  const lh = entry.localOff;
+  if (buf.readUInt32LE(lh) !== 0x04034b50) throw new Error(`zip 局部头损坏：${entry.name}`);
+  const start = lh + 30 + buf.readUInt16LE(lh + 26) + buf.readUInt16LE(lh + 28);
+  const data = buf.subarray(start, start + entry.compSize);
+  if (entry.method === 0) return data;
+  if (entry.method === 8) return zlib.inflateRawSync(data);
+  throw new Error(`zip 压缩方式 ${entry.method} 不支持：${entry.name}`);
+}
+
+const XML_ENTS = { "&lt;": "<", "&gt;": ">", "&quot": '"', "&apos": "'", "&nbsp": " ", "&amp;": "&" };
+const decodeXml = (s) =>
+  s
+    .replace(/&#x([0-9a-f]+);?/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);?/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&(lt|gt|quot|apos|amp);?/g, (m) => XML_ENTS[m] ?? m);
+
+// docx 的 document.xml → 纯文本：段落之间空行分隔（番茄按空行分段），段内换行保留
+function docxToText(xml) {
+  const bodyStart = xml.indexOf("<w:body");
+  const bodyEnd = xml.indexOf("</w:body>");
+  let s = bodyStart >= 0 ? xml.slice(xml.indexOf(">", bodyStart) + 1, bodyEnd > 0 ? bodyEnd : xml.length) : xml;
+  s = s
+    .replace(/<w:tab[^>]*\/>/g, " ")
+    .replace(/<w:(br|cr)[^>]*\/>/g, "\n")
+    .replace(/<\/w:p\s*>/g, "\n\n") // 段落边界 → 空行（mdToHtml 按空行分段）
+    .replace(/<[^>]+>/g, ""); // 其余标签一律去掉（正文都在 <w:t> 里，内容里的 < > 是实体不会误伤）
+  return decodeXml(s)
+    .replace(/\r/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function readDocxText(file) {
+  const buf = fs.readFileSync(file);
+  if (buf.length >= 4 && buf.readUInt32LE(0) === 0xe011cfd0) {
+    throw new TomatoApiError(-1, `${path.basename(file)} 是加密的 .docx，读不了；请在 Word 里取消密码后另存`);
+  }
+  const entries = zipEntries(buf);
+  const main = entries.find((e) => e.name === "word/document.xml");
+  if (!main) throw new TomatoApiError(-1, `${path.basename(file)} 里没有 word/document.xml（不是有效的 .docx）`);
+  return docxToText(zipExtract(buf, main).toString("utf8"));
+}
+
+// 读正文（md/txt/docx）；旧版 .doc 明确报错（OLE 二进制解析成本高，让用户另存为 .docx）
+function readNovelText(file) {
+  if (DOC_LEGACY_RE.test(file))
+    throw new TomatoApiError(-1, `${path.basename(file)} 是旧版 .doc 格式，读不了：请在 Word 里「另存为 → .docx」`);
+  if (/\.docx$/i.test(file)) {
+    try {
+      return readDocxText(file);
+    } catch (e) {
+      if (e instanceof TomatoApiError) throw e;
+      throw new TomatoApiError(-1, `读取 .docx 失败：${path.basename(file)}（${e.message}）`);
+    }
+  }
+  return fs.readFileSync(file, "utf8").replace(/^﻿/, "");
+}
+
+// 加载过程中的提醒（旧版 .doc、被跳过的内容等），随 /api/book-chapters 一起回给界面
+let loadWarnings = [];
+const warnLoad = (m) => { if (!loadWarnings.includes(m)) loadWarnings.push(m); };
+
+// 平铺文件名里的「卷」前缀（兼容多种命名，全部可选；解析后卷名仍可被 卷.md 的声明覆盖）
+const VOL_NUM = "[0-9]{1,4}|[零一二三四五六七八九十百两]+";
+const VOL_SEPS = "[\\s\\-_—.、，·＋+]*";
+// 「卷」后面不能直接跟汉字数字/常用字，否则「一卷」会吞掉「第二卷…」、
+// 「卷王的诞生」会被当成卷 —— 序号后面必须紧跟分隔符或结束才认
+const NOT_CN = "(?![零一二三四五六七八九十百两])";
+const NOT_HAN = "(?![零一二三四五六七八九十百两王宗哥儿子女风草叶)])";
+const VOL_PATTERNS = [
+  new RegExp(`^第\\s*(${VOL_NUM})\\s*卷${NOT_CN}${VOL_SEPS}([\\s\\S]*)$`), // 第1卷- / 第一卷：
+  new RegExp(`^卷\\s*(${VOL_NUM})${VOL_SEPS}([\\s\\S]*)$`), // 卷1- / 卷一
+  new RegExp(`^([0-9]{1,4})\\s*卷${NOT_HAN}${VOL_SEPS}([\\s\\S]*)$`), // 01卷- / 1卷 第一章（仅阿拉伯数字，避免「一卷」）
+  new RegExp(`^[Vv][Oo][Ll]\\.?\\s*[\\s\\-_—.、，·＋+]*([0-9]{1,4})[\\s\\-_—.、，·＋+]*([\\s\\S]*)$`), // Vol.1- / VOL 1_ / Vol.2第一章
+  new RegExp(`^[Vv]\\.?\\s*([0-9]{1,4})[\\s\\-_—.、，·＋+]+([\\s\\S]*)$`), // V1- / v2_（V 后必须跟序号+分隔符，避免误伤标题）
+];
+// 「卷号-章号」纯数字两段（如 01-03-标题）：两段都算序号，第一段当卷、第二段当章
+// 卷号限 1~2 位，避免把「2020-03」这类日期/编号文件名误判成卷
+const VOL_NUM_PAIR_RE = /^([0-9]{1,2})\s*[\-_—.、，·\s]+([0-9]{1,4})(?=[\s\-_—.、，·]|$)([\s\S]*)$/;
+const VOL_SEPS_RE = /^[\s\-_—.、，·＋+]/; // 卷标记与后面内容之间的分隔符（单个字符判断用）
+const VOL_SEPS_RE_G = /^[\s\-_—.、，·＋+]+/g;
+// 书根/书稿下常见但不是卷的目录（平铺模式找卷子目录时跳过）
+const AUX_DIR_NAMES = ["案头资料", "文档", "笔记", "素材", "设定", "大纲", "归档", "引言", "导出", "备份"];
+
+// 平铺模式：目录下直接放章节文件（md/txt/docx），一文件一章；可带卷前缀（01卷-03章-标题 等）
+// 卷来源（都兼容，优先级从高到低）：① 文件名里的卷标记 ② 卷.md 声明的卷名作前缀 ③ 文件名「卷号-章号」两段数字 ④ 卷子目录
+function listFlatChapters(bookDir) {
+  const entryFiles = (dir) => {
+    try {
+      return fs
+        .readdirSync(dir, { withFileTypes: true })
+        .filter((e) => e.isFile() && FLAT_FILE_RE.test(e.name) && !e.name.startsWith(".") && !isAuxDoc(e.name))
+        .map((e) => e.name);
+    } catch {
+      return [];
+    }
+  };
+  const warnLegacyDocs = (dir) => {
+    try {
+      const legacy = fs
+        .readdirSync(dir, { withFileTypes: true })
+        .filter((e) => e.isFile() && DOC_LEGACY_RE.test(e.name))
+        .map((e) => e.name);
+      if (legacy.length)
+        warnLoad(`${dir} 里有 ${legacy.length} 个旧版 .doc（${legacy.slice(0, 3).join("、")}${legacy.length > 3 ? "…" : ""}），读不了：请在 Word 里另存为 .docx`);
+    } catch { /* ignore */ }
+  };
+  warnLegacyDocs(bookDir);
+  const files = entryFiles(bookDir).map((n) => ({ file: n, dirVol: null }));
+  // 顶层没有章节文件时，把子目录当卷（卷名 = 目录名），目录里放平铺章节
+  if (!files.length) {
+    let dirs = [];
+    try {
+      dirs = fs.readdirSync(bookDir, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith("."));
+    } catch { /* ignore */ }
+    for (const d of dirs) {
+      if (AUX_DIR_NAMES.some((x) => d.name === x || d.name.startsWith(x))) continue;
+      const innerDir = path.join(bookDir, d.name);
+      // 里面是「第NN章-*」章节目录 → 属于嵌套结构，交给上面的嵌套扫描，平铺不重复收
+      try {
+        if (fs.readdirSync(innerDir, { withFileTypes: true }).some((e) => e.isDirectory() && CHAPTER_DIR_RE.test(e.name))) continue;
+      } catch { /* ignore */ }
+      const inner = entryFiles(innerDir);
+      warnLegacyDocs(innerDir);
+      if (!inner.length) continue;
+      for (const n of inner) files.push({ file: n, dirVol: d.name });
+    }
+  }
+  if (!files.length) return [];
+  // 卷.md（书根或上一级）声明的卷：名称/顺序用来给「第N卷」取名与排序
+  const mdVolumes = readVolumeMd(bookDir).volumes;
+  const declaredByOrder = new Map(mdVolumes.map((v) => [v.order, v.name]));
+  const declaredByName = new Map(mdVolumes.map((v) => [v.name, v]));
+  const declaredNames = [...declaredByName.keys()].sort((a, b) => b.length - a.length);
+  files.sort((a, b) => (a.dirVol ?? "").localeCompare(b.dirVol ?? "", "zh") || a.file.localeCompare(b.file, "zh", { numeric: true, sensitivity: "base" })); // 自然序：2 < 10
+  const out = [];
+  const lastNumByVol = new Map(); // 各卷独立续号（卷内章号从 1 起算）
+  for (const { file: name, dirVol } of files) {
+    const base0 = name.replace(FLAT_FILE_RE, "");
+    let volNum = null; // 文件名里解析出的卷号
+    let volName = dirVol; // 卷名（卷.md 声明的名字优先）
+    let base = base0;
+    // ① 卷标记
+    for (const re of VOL_PATTERNS) {
+      const m = base.match(re);
+      if (!m) continue;
+      const n = cnToNum(m[1]);
+      if (Number.isNaN(n)) continue;
+      volNum = n;
+      base = m[2].trim();
+      break;
+    }
+    // ② 卷.md 里的卷名直接作前缀（新生-第3章 xxx / 新生/第3章 xxx）
+    if (volNum === null && !volName) {
+      const hit = declaredNames.find((n2) => base === n2 || (base.startsWith(n2) && VOL_SEPS_RE.test(base[n2.length])));
+      if (hit) {
+        volName = hit;
+        volNum = mdVolumes.find((v) => v.name === hit)?.order ?? null;
+        base = base.slice(hit.length).replace(VOL_SEPS_RE_G, "");
+      }
+    }
+    // ③ 「卷号-章号」两段数字（01-03-标题）
     let num = null;
     let title = null;
-    let m = base.match(DI_TITLE_RE) || base.match(NUM_TITLE_RE);
+    if (volNum === null && !volName) {
+      const pair = base.match(VOL_NUM_PAIR_RE);
+      if (pair) {
+        volNum = Number(pair[1]);
+        base = pair[3].replace(VOL_SEPS_RE_G, "").trim(); // 去掉卷号-章号后面的分隔符
+        title = null;
+        num = Number(pair[2]); // 先把第二段当章号（卷-章 已定），后面文件名解析若能给出标题就用它
+      }
+    }
+    let m = base.match(DI_TITLE_RE) || base.match(CHAPTER_BARE_RE) || base.match(NUM_TITLE_RE);
     if (m) {
       const n = cnToNum(m[1]);
       if (!Number.isNaN(n)) { num = n; title = m[2].trim(); }
     }
-    let content = fs.readFileSync(path.join(bookDir, name), "utf8").replace(/^\uFEFF/, "");
+    let content = readNovelText(path.join(bookDir, name));
     content = content.replace(/^#\s.*\n/, "").replace(/^\n+|\n+$/g, ""); // 去首部 H1
     // 文件名给不全序号/标题 → 看正文首行（如「第一章 初入江湖」）
     if (num === null || !title) {
@@ -479,35 +689,366 @@ function listFlatChapters(bookDir) {
         }
       }
     }
+    const key = volName ?? (volNum !== null ? `#${volNum}` : "");
     const numFromName = num !== null;
-    if (num === null) num = lastNum + 1; // 纯标题文件名：按排序位置续号
+    if (num === null) num = (lastNumByVol.get(key) ?? 0) + 1; // 纯标题文件名：按排序位置在该卷内续号
     // 剥掉标题自带的「第N章」前缀，避免发布标题重复章节号
     title = stripChapterPrefix(title);
-    // 文件名没有序号（纯标题文件名）时，文件名本身就是章节名
+    // 文件名没给出标题 → 去掉序号/章节号后剩下的那段就是章节名（两段数字命名常见）
+    if (!title) {
+      const rest = stripChapterPrefix(base);
+      if (rest && rest !== String(num)) title = rest;
+    }
+    // 完全没有序号（纯标题文件名）时，文件名本身就是章节名
     if (!title && !numFromName) title = base.trim();
-    lastNum = num;
+    lastNumByVol.set(key, num);
+    // 卷名：卷.md 声明的名字 > 目录名/文件名里的卷名 > 「第N卷」
+    const finalVol = volName ?? (volNum !== null ? (declaredByOrder.get(volNum) ?? `第${volNum}卷`) : null);
     out.push({
       num,
       title,
-      vol: null,
-      file: name,
+      vol: finalVol,
+      volNum,
+      file: dirVol ? `${dirVol}/${name}` : name,
       wordCount: content.replace(/\s/g, "").length,
       content,
     });
   }
-  // 按解析出的章节序号排序（稳定：同号文件保持文件名自然序）。
-  // 否则「第N章/第N回」命名或序号在正文里的文件会按文件名落在中文区，顺序错乱
-  out.sort((a, b) => a.num - b.num);
+  // 有卷：按「卷的顺序（卷.md 顺序 / 卷号）→ 卷内章号」排；无卷：仍按章节序号排（原行为）
+  const volOrder = new Map();
+  if (out.some((c) => c.vol)) {
+    mdVolumes.forEach((v, i) => volOrder.set(v.name, i + 1));
+    let extra = mdVolumes.length;
+    for (const c of out) {
+      if (c.vol && !volOrder.has(c.vol)) volOrder.set(c.vol, ++extra);
+    }
+    out.sort(
+      (a, b) =>
+        (a.vol ? 1 : 0) - (b.vol ? 1 : 0) ||
+        (volOrder.get(a.vol) ?? 0) - (volOrder.get(b.vol) ?? 0) ||
+        (a.vol ?? "").localeCompare(b.vol ?? "", "zh") ||
+        a.num - b.num
+    );
+  } else {
+    // 按解析出的章节序号排序（稳定：同号文件保持文件名自然序）。
+    // 否则「第N章/第N回」命名或序号在正文里的文件会按文件名落在中文区，顺序错乱
+    out.sort((a, b) => a.num - b.num);
+  }
+  // 番茄的 chapter_index 是全书连续的（卷只是分组），所以有卷时发布标题按全书顺序连续编号，
+  // 否则两个卷都有「第1章」会在番茄端看起来乱序；无卷时保持文件里的序号不变
+  const renumber = volOrder.size > 0;
   return out.map((c, i) => ({
     index: i + 1,
     ...c,
-    publishTitle: c.title ? `第${c.num}章 ${c.title}` : `第${c.num}章`,
+    publishNum: renumber ? i + 1 : c.num,
+    publishTitle: c.title
+      ? `第${renumber ? i + 1 : c.num}章 ${c.title}`
+      : `第${renumber ? i + 1 : c.num}章`,
+  }));
+}
+
+// ---------- 本地卷（卷.md）规则：与写书计划里「小说 → 卷 → 章节」的约定对齐 ----------
+// 真实书里 卷.md 有两种写法，都要认：
+//   ## vol_1 / - 名称：新生 / - 顺序：1 / - 描述：…      （神念换天、听潮人）
+//   ## 旱魃除灾 / - 名称：旱魃除灾 / - 顺序：1            （八仙剧本：标题即卷名）
+// 模板自带的 <!-- … --> 说明里有「## 卷ID | 名称 | 描述」示例行，先剥注释再解析，示例也不算卷。
+function readVolumeMd(bookDir) {
+  // 传进来的可能是单个文档（整本一个文件）→ 卷.md 在它所在目录/上一级
+  let dir = bookDir;
+  try {
+    if (fs.statSync(bookDir).isFile()) dir = path.dirname(bookDir);
+  } catch { /* 路径不存在时按原样拼路径 */ }
+  // 卷.md 在书根，而章节常在 书根/书稿/ 下：两个位置都找
+  for (const p of [path.join(dir, "卷.md"), path.join(path.dirname(dir), "卷.md")]) {
+    if (!fs.existsSync(p)) continue;
+    let txt;
+    try {
+      txt = fs.readFileSync(p, "utf8").replace(/^\uFEFF/, "").replace(/<!--[\s\S]*?-->/g, "");
+    } catch {
+      continue;
+    }
+    const volumes = [];
+    for (const block of txt.split(/\r?\n(?=##\s)/)) {
+      const hm = block.match(/^##\s+(.+?)\s*$/m);
+      if (!hm) continue;
+      const f = {};
+      for (const fm of block.matchAll(/^\s*[-*]\s*(名称|顺序|描述)\s*[:：]\s*(.*)$/gm)) f[fm[1]] = fm[2].trim();
+      const name = f["名称"] || hm[1].trim();
+      if (!name || name.includes("|")) continue;
+      const order = Number(f["顺序"]);
+      volumes.push({ id: hm[1].trim(), name, order: Number.isFinite(order) ? order : volumes.length + 1, desc: f["描述"] ?? "" });
+    }
+    volumes.sort((a, b) => a.order - b.order);
+    return { file: p, volumes };
+  }
+  return { file: null, volumes: [] };
+}
+
+// 本地卷清单 = 卷.md 声明的卷 ∪ 实际扫到的卷目录（卷.md 顺序优先，未声明的排在后面）
+function localVolumesOf(bookDir, chapters) {
+  const md = readVolumeMd(bookDir);
+  const byName = new Map();
+  md.volumes.forEach((v) => byName.set(v.name, { name: v.name, order: v.order, declared: true, count: 0 }));
+  for (const c of chapters) {
+    if (!c.vol) continue;
+    if (!byName.has(c.vol)) byName.set(c.vol, { name: c.vol, order: md.volumes.length + byName.size + 1, declared: false, count: 0 });
+    byName.get(c.vol).count++;
+  }
+  return [...byName.values()].sort((a, b) => a.order - b.order || a.name.localeCompare(b.name, "zh"));
+}
+
+// ---------- 番茄端的卷：读取 / 与本地卷对照 / 建卷 ----------
+// 实测规则（chunk 逆向 + 真实账号只读探测，另见 AGENTS.md）：
+// - 章节挂在书上（平铺表），每章带 volume_id / volume_name，卷只是分组容器
+// - volume_list/v1 返回**倒序**（新卷在前），官方 UI 拿到后 .reverse() → 这里统一按显示顺序（第 1 卷在前）返回
+// - 没有「移动章节 / 改章节顺序」的接口 → 章节只能追加，chapter_index 由番茄按发布顺序跨卷连续分配
+// - add_volume / modify/v0 的参数只能走 query（实测传 JSON body 一律 code=-2 参数有误）
+// - 建卷限制：code=-4054「暂不支持创建多个无章节的分卷」→ 新卷只能紧邻它的第一章发布前创建
+async function fetchRemoteVolumeRaw(bookId) {
+  const data = await apiGet("/api/author/volume/volume_list/v1", { book_id: bookId });
+  return Array.isArray(data) ? data : (data?.volume_list ?? []);
+}
+
+async function fetchRemoteVolumes(bookId) {
+  return (await fetchRemoteVolumeRaw(bookId)).slice().reverse(); // 显示顺序
+}
+
+const volNameOf = (v) => String(v?.volume_name ?? "").trim();
+
+// 章节列表：接口单页上限 100，自动翻页拉全量（满页才继续，最多 50 页兜底）
+async function fetchChapters(bookId, volumeId = "") {
+  const items = [];
+  for (let pageIndex = 0; pageIndex < 50; pageIndex++) {
+    const data = await apiGet("/api/author/chapter/chapter_list/v1", {
+      book_id: bookId,
+      volume_id: volumeId,
+      page_index: pageIndex,
+      page_count: 100,
+      status: 0,
+      must_have_correction_feedback: 0,
+      need_correction_feedback_num: 1,
+      sort: "",
+    });
+    const list = Array.isArray(data) ? data : (data?.item_list ?? []);
+    items.push(...list);
+    if (list.length < 100) break; // 不满一页 = 已取完
+  }
+  return items;
+}
+
+// 全书章节：逐卷取（实测 volume_id 传空不等于「全部卷」，逐卷取最稳），并补上 volume_id / volume_name
+async function fetchAllChapters(bookId) {
+  const vols = await fetchRemoteVolumes(bookId);
+  if (!vols.length) return fetchChapters(bookId, "");
+  const out = [];
+  for (const v of vols) {
+    const id = String(v.volume_id);
+    for (const it of await fetchChapters(bookId, id)) {
+      if (!it.volume_id) it.volume_id = id;
+      if (!it.volume_name) it.volume_name = volNameOf(v);
+      out.push(it);
+    }
+  }
+  return out;
+}
+
+// 本地卷名 → 番茄卷的对照（规则）：
+// 1) 同名直接复用；2) 没同名的本地卷按位置认领番茄里未被认领的卷，并把番茄卷**改名成本地卷名**；
+// 3) 还多出来的本地卷 → add_volume 新建（dryRun 只报告不建：番茄不允许同时存在多个无章节的空卷）
+async function syncVolumes(bookId, names, { dryRun = false } = {}) {
+  const raw = await fetchRemoteVolumeRaw(bookId); // 番茄原序（新卷在前）
+  const display = raw.slice().reverse(); // 显示顺序（第 1 卷在前）
+  const wanted = [...new Set(names.map((n) => String(n ?? "").trim()).filter(Boolean))];
+  const taken = new Set();
+  const matched = new Map(); // 本地卷名 → { volume_id, volume_name, action }
+  for (const n of wanted) {
+    const hit = display.find((v) => !taken.has(String(v.volume_id)) && volNameOf(v) === n);
+    if (hit) {
+      taken.add(String(hit.volume_id));
+      matched.set(n, { volume_id: String(hit.volume_id), volume_name: volNameOf(hit), action: "复用同名卷" });
+    }
+  }
+  const free = display.filter((v) => !taken.has(String(v.volume_id)));
+  const toCreate = [];
+  for (const n of wanted) {
+    if (matched.has(n)) continue;
+    const v = free.shift(); // 按位置认领：本地第 i 卷 ↔ 番茄第 i 卷
+    if (v) {
+      taken.add(String(v.volume_id));
+      matched.set(n, { volume_id: String(v.volume_id), volume_name: volNameOf(v), action: `改名 → ${n}` });
+    } else toCreate.push(n);
+  }
+
+  const actions = [];
+  const renames = [...matched].filter(([, v]) => v.action !== "复用同名卷");
+  if (renames.length) {
+    if (dryRun) {
+      for (const [n, v] of renames) actions.push(`将把番茄卷「${v.volume_name}」(${v.volume_id}) 改名为「${n}」`);
+    } else {
+      // modify/v0 要整卷列表（volume_data = 番茄**原序**，与官方 UI reverse 后一致），只改名字、不动 volume_id
+      const nameById = new Map(renames.map(([n, v]) => [String(v.volume_id), n]));
+      const vd = raw.map((v) => ({
+        volume_id: String(v.volume_id),
+        volume_name: nameById.get(String(v.volume_id)) ?? volNameOf(v),
+      }));
+      await apiPostQuery("/api/author/volume/modify/v0", { book_id: bookId, volume_data: JSON.stringify(vd) });
+      for (const [n, v] of renames) {
+        matched.set(n, { volume_id: v.volume_id, volume_name: n, action: `已改名「${v.volume_name}」→「${n}」` });
+        actions.push(`已把番茄卷「${v.volume_name}」改名为「${n}」`);
+      }
+    }
+  }
+
+  for (const n of toCreate) {
+    if (dryRun) actions.push(`番茄上没有可认领的卷：「${n}」将在发布该卷第一章前新建`);
+    else actions.push(`番茄上没有可认领的卷：「${n}」将在发布该卷第一章前新建（番茄不许同时存在多个空卷）`);
+    // 不在这里建：番茄 code=-4054 不让同时存在多个无章节的分卷，必须等该卷要发第一章时再建
+    matched.set(n, { volume_id: "", volume_name: n, action: "待新建", pending: true });
+  }
+
+  const map = new Map();
+  for (const n of wanted) map.set(n, matched.get(n));
+  return { map, actions, volumes: wanted.map((n) => ({ local: n, ...matched.get(n) })) };
+}
+
+// 懒建卷：发布某卷的第一章前调用（add_volume 只认 query 参数）
+async function ensureRemoteVolume(bookId, name) {
+  let createdId = "";
+  try {
+    const data = await apiPostQuery("/api/author/volume/add_volume/v0", { book_id: bookId, volume_name: name });
+    createdId = String(data?.volume_id ?? "");
+  } catch (e) {
+    if (e.code === -4054)
+      throw new TomatoApiError(-4054, `番茄不允许同时存在多个无章节的分卷，建卷「${name}」失败：先把前一卷的章节发出去（或删除空卷）`);
+    throw e;
+  }
+  if (!createdId) {
+    const again = await fetchRemoteVolumes(bookId); // 接口没回 volume_id → 回查列表按名字找
+    createdId = String(again.find((v) => volNameOf(v) === name)?.volume_id ?? "");
+  }
+  if (!createdId) throw new TomatoApiError(-1, `新建卷「${name}」失败：番茄没返回 volume_id`);
+  logApp(`[volumes] 已新建卷「${name}」(volume_id=${createdId})`);
+  return createdId;
+}
+
+// ---------- 单文档模式：所有章节都在一个文件里（txt / md / docx），从文档里拆出章节 ----------
+// 章节标题行（只有「整行就是标题」的短行才算，正文里出现的「第3章」字样不会误判）
+const DOC_HEAD_WORD_RE = /^(楔子|序章|序言|引子|前言|后记|尾声|终章|番外篇|番外)(?:[ 　.．、:：·\-—–]+[^。．,，;；!！?？\s]{0,20})?$/;
+const DOC_HEAD_MAX = 40;
+
+function docHeading(line) {
+  // md 写法（## 第1章 标题）先剥掉标记，纯文本行原样
+  const t = String(line).trim().replace(/^#+\s*/, "").replace(/^[*\-–—]{1,3}\s+(?=\S)/, "").trim();
+  if (!t || t.length > DOC_HEAD_MAX) return null;
+  let m = t.match(/^第\s*([0-9零一二三四五六七八九十百两]+)\s*([章回节卷])([\s\S]*)$/);
+  if (m) {
+    // 序号+章/卷后面必须是行尾或分隔符，否则是正文句子（「第一章正文第一段。」不算标题）
+    if (m[3] && !/^[ 　.．、:：·\-—–]/.test(m[3])) return null;
+    const n = cnToNum(m[1]);
+    if (Number.isNaN(n)) return null;
+    return { kind: m[2] === "卷" ? "vol" : "chap", num: n, title: m[3].trim() };
+  }
+  m = t.match(/^([0-9]{1,4}|[零一二三四五六七八九十百两]+)\s*[章回节]([ \t.．、:：·\-—–]+[\s\S]*|)$/);
+  if (m) {
+    const n = cnToNum(m[1]);
+    if (Number.isNaN(n)) return null;
+    return { kind: "chap", num: n, title: m[2].trim() };
+  }
+  m = t.match(DOC_HEAD_WORD_RE);
+  // 「楔子」这种独占一行（或后面只跟个短名）才算章；「楔子正文，足够长的一段…」是正文，不能当标题
+  if (m) return { kind: "chap", num: null, title: [m[1], (m[2] ?? "").trim()].filter(Boolean).join(" ") };
+  return null;
+}
+
+// 整本一个文件 → 章节列表。文档里的「第N卷」标记决定其后章节属于哪一卷，
+// 卷名优先用同目录 卷.md 声明的名字；章号缺失时按出现顺序在该卷内续号
+function listSingleDocChapters(file) {
+  const label = path.basename(file).replace(/\.(docx|txt|md)$/i, "");
+  let text;
+  try {
+    text = readNovelText(file).replace(/\r/g, "");
+  } catch (e) {
+    if (e instanceof TomatoApiError) throw e;
+    throw new TomatoApiError(-1, `读取文档失败：${file}（${e.message}）`);
+  }
+  const declaredByOrder = new Map(readVolumeMd(file).volumes.map((v) => [v.order, v.name]));
+  const lines = text.split("\n");
+  // 去首尾空白、行尾空格、孤立页码行（txt/docx 粘贴常见），并压掉多余空行
+  const clean = (s) => s.replace(/[ \t]+\n/g, "\n").replace(/^\d{1,4}[ 　]*$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+  const out = [];
+  const pre = [];
+  let cur = null;
+  let vol = null;
+  const flush = () => {
+    if (!cur) return;
+    let body = clean(cur.lines.join("\n"));
+    let title = cur.title;
+    if (!title) {
+      const head = body.split("\n")[0].trim(); // 「第1章」单独一行、标题在下一行的写法
+      if (head && head.length <= 24 && body.includes("\n")) {
+        title = head;
+        body = body.split("\n").slice(1).join("\n").trim();
+      }
+    }
+    if (body) out.push({ num: cur.num, title: stripChapterPrefix(title), vol: cur.vol, file: `${label}#${out.length + 1}`, content: body });
+    cur = null;
+  };
+  for (const raw of lines) {
+    const h = docHeading(raw);
+    if (h && h.kind === "vol") {
+      flush();
+      vol = declaredByOrder.get(h.num) ?? (h.title || `第${h.num}卷`);
+      continue;
+    }
+    if (h && h.kind === "chap") {
+      flush();
+      cur = { num: h.num, title: h.title, vol, lines: [] };
+      continue;
+    }
+    (cur ? cur.lines : pre).push(raw);
+  }
+  flush();
+  if (!out.length) {
+    const body = clean(lines.join("\n"));
+    if (!body) throw new TomatoApiError(-1, `文档里没有正文：${file}`);
+    warnLoad("文档里没找到「第N章 标题」这样的章节行，整篇作为一个章节");
+    out.push({ num: 1, title: label, vol, file: `${label}#1`, content: body });
+  }
+  const preBody = clean(pre.join("\n"));
+  if (preBody && out.length > 1) {
+    if (preBody.length >= 200) {
+      out.unshift({ num: null, title: "前言", vol: out[0].vol, file: `${label}#前言`, content: preBody });
+      warnLoad(`文档开头有 ${preBody.length} 字不属于任何章节，已作为「前言」章节`);
+    } else {
+      warnLoad(`文档开头 ${preBody.length} 字（书名/简介之类）没有章节标题，已忽略`);
+    }
+  }
+  const lastNum = new Map(); // 卷内章号续号（各卷独立）
+  for (const c of out) {
+    const key = c.vol ?? "";
+    if (c.num === null) c.num = (lastNum.get(key) ?? 0) + 1;
+    lastNum.set(key, Math.max(lastNum.get(key) ?? 0, c.num));
+  }
+  // 有卷 → 发布标题按全书顺序连续编号（番茄 chapter_index 跨卷连续）；无卷 → 用文档里的章号
+  const renumber = out.some((c) => c.vol);
+  return out.map((c, i) => ({
+    index: i + 1,
+    ...c,
+    volNum: null,
+    wordCount: c.content.replace(/\s/g, "").length,
+    publishNum: renumber ? i + 1 : c.num,
+    publishTitle: c.title ? `第${renumber ? i + 1 : c.num}章 ${c.title}` : `第${renumber ? i + 1 : c.num}章`,
   }));
 }
 
 function listBookChapters(bookDir) {
-  if (!fs.existsSync(bookDir) || !fs.statSync(bookDir).isDirectory())
-    throw new TomatoApiError(-1, `书目录不存在：${bookDir}`);
+  loadWarnings = [];
+  let st = null;
+  try {
+    st = fs.statSync(bookDir);
+  } catch { /* 不存在 */ }
+  if (st?.isFile()) return listSingleDocChapters(bookDir); // 直接给了一个文档 → 单文档模式
+  if (!st?.isDirectory()) throw new TomatoApiError(-1, `书目录不存在：${bookDir}`);
   // 无「第NN章-*」章节目录时自动尝试平铺结构
   let topEntries = [];
   try {
@@ -533,14 +1074,19 @@ function listBookChapters(bookDir) {
         const num = Number(m[1]);
         const title = m[2];
         const folder = path.join(dir, ent.name);
-        const files = fs.readdirSync(folder).filter((f) => f.endsWith(".md"));
+        const files = fs.readdirSync(folder).filter((f) => NOVEL_FILE_RE.test(f));
         const file =
           files.find((f) => f === `${pad(num)}-${title}.md`) ??
           files.find((f) => f === `第${pad(num)}章-${title}.md`) ??
           files.find((f) => f === "章节.md") ??
-          files.find((f) => !AUX_SUFFIXES.some((s) => f.endsWith(`${s}.md`)));
-        if (!file) continue; // 没有正文文件的章节目录，跳过
-        let content = fs.readFileSync(path.join(folder, file), "utf8");
+          files.find((f) => !AUX_SUFFIXES.some((s) => f.endsWith(`${s}.md`))) ??
+          files.find((f) => NOVEL_FILE_RE.test(f) && !AUX_SUFFIXES.some((s) => f.endsWith(`${s}.docx`)));
+        if (!file) {
+          if (fs.readdirSync(folder).some((f) => DOC_LEGACY_RE.test(f)))
+            warnLoad(`${ent.name}/ 里只有旧版 .doc，读不了（请在 Word 里另存为 .docx）`);
+          continue; // 没有正文文件的章节目录，跳过
+        }
+        let content = readNovelText(path.join(folder, file));
         content = content.replace(/^#\s.*\n/, "").replace(/^\n+|\n+$/g, ""); // 去首部 H1
         found.push({
           num,
@@ -556,11 +1102,24 @@ function listBookChapters(bookDir) {
     }
   };
   scan(bookDir, null);
-  found.sort((a, b) => (a.vol ? 1 : 0) - (b.vol ? 1 : 0) || (a.vol ?? "").localeCompare(b.vol ?? "", "zh") || a.num - b.num);
+  // 顺序规则（用户定的）：书根章节 → 各卷按 卷.md 的「顺序」 → 卷内按章号
+  const volRank = new Map(readVolumeMd(bookDir).volumes.map((v, i) => [v.name, i + 1]));
+  const rank = (vol) => (vol ? (volRank.get(vol) ?? volRank.size + 1) : 0);
+  found.sort(
+    (a, b) =>
+      (a.vol ? 1 : 0) - (b.vol ? 1 : 0) ||
+      rank(a.vol) - rank(b.vol) ||
+      (a.vol ?? "").localeCompare(b.vol ?? "", "zh") ||
+      a.num - b.num
+  );
+  // 有卷时发布标题按全书顺序连续编号（番茄的 chapter_index 就是跨卷连续的，
+  // 两卷都有「第1章」在番茄端会看起来乱序）；无卷时保持目录里的序号（原行为）
+  const renumber = found.some((c) => c.vol);
   return found.map((c, i) => ({
     index: i + 1,
     ...c,
-    publishTitle: `第${c.num}章 ${c.title}`, // 番茄风格：阿拉伯数字
+    publishNum: renumber ? i + 1 : c.num,
+    publishTitle: `第${renumber ? i + 1 : c.num}章 ${c.title}`, // 番茄风格：阿拉伯数字
   }));
 }
 
@@ -805,7 +1364,14 @@ const server = http.createServer(async (req, res) => {
       // 文件夹浏览：列子目录并标记「书目录」（含 .articlewriter-meta.json 或 第NN章-* 章节目录）
       // 不指定路径时从用户主目录开始浏览（不设默认书目录，由用户点选）
       case "GET /api/browse": {
-        const p = path.resolve(url.searchParams.get("path") || os.homedir());
+        let p = path.resolve(url.searchParams.get("path") || os.homedir());
+        let fromFile = false;
+        try {
+          if (fs.statSync(p).isFile()) {
+            p = path.dirname(p); // 当前值是文档（单文档模式）→ 列它所在目录
+            fromFile = true;
+          }
+        } catch { /* 不存在则下面报错 */ }
         if (!fs.existsSync(p) || !fs.statSync(p).isDirectory())
           throw new TomatoApiError(-1, `目录不存在：${p}`);
         const isBookDir = (dir) => {
@@ -830,6 +1396,21 @@ const server = http.createServer(async (req, res) => {
         } catch {
           /* 无权限则空列表 */
         }
+        // 可点的文档：单文档模式（整本一个文件）或平铺的章节文件，直接点文件名即可加载
+        // 卷.md、大纲/设定这类辅助文件不算「可点的正文文档」
+        let files = [];
+        try {
+          files = fs
+            .readdirSync(p, { withFileTypes: true })
+            .filter(
+              (e) =>
+                e.isFile() && !e.name.startsWith(".") && !isAuxDoc(e.name) && (NOVEL_FILE_RE.test(e.name) || DOC_LEGACY_RE.test(e.name))
+            )
+            .map((e) => ({ name: e.name, legacy: DOC_LEGACY_RE.test(e.name) }))
+            .sort((a, b) => a.name.localeCompare(b.name, "zh"));
+        } catch {
+          /* 无权限则空列表 */
+        }
         // Windows：列出可用磁盘（C:\、D:\…），供界面一键切换盘符；到盘根时 parent 置空
         const drives =
           process.platform === "win32"
@@ -843,48 +1424,75 @@ const server = http.createServer(async (req, res) => {
             : [];
         let parent = path.dirname(p);
         if (parent === p) parent = null; // 已到盘根（C:\ 的 dirname 还是 C:\）
-        json(res, 200, { path: p, parent, drives, isBook: isBookDir(p), dirs: entries });
+        json(res, 200, { path: p, parent, drives, isBook: isBookDir(p), from_file: fromFile, dirs: entries, files });
         return;
       }
 
-      // 按 articlewriter 约定从书目录加载章节（章节目录即章，正文 = NN-<标题>.md）
+      // 从本地加载章节：书目录（articlewriter 嵌套 / 平铺一文件一章）或单个文档（整本一个文件，按「第N章」拆章）
+      // 顺带给出本地卷清单与加载提醒（旧版 .doc、被忽略的开头等）
       case "GET /api/book-chapters": {
         const p = url.searchParams.get("path");
-        if (!p) throw new TomatoApiError(-2, "请先指定书目录（第 4 步输入路径或点「浏览」选择）");
+        if (!p) throw new TomatoApiError(-2, "请先指定书目录或文档（第 4 步输入路径或点「浏览」选择）");
         const chapters = listBookChapters(p);
-        json(res, 200, { path: p, chapters });
-        return;
-      }
-
-      case "GET /api/volumes": {
-        const data = await apiGet("/api/author/volume/volume_list/v1", {
-          book_id: url.searchParams.get("book_id") || "",
+        const md = readVolumeMd(p);
+        let singleDoc = false;
+        try {
+          singleDoc = fs.statSync(p).isFile();
+        } catch { /* 不存在时 listBookChapters 已经报过错 */ }
+        json(res, 200, {
+          path: p,
+          single_doc: singleDoc,
+          chapters,
+          volumes: localVolumesOf(p, chapters),
+          volume_md: md.file,
+          warnings: loadWarnings,
         });
-        json(res, 200, data);
         return;
       }
 
-      // 章节列表：接口单页上限 100，自动翻页拉全量（满页才继续，最多 50 页兜底）
+      // 番茄卷列表：统一按显示顺序（第 1 卷在前；接口本身是倒序）
+      case "GET /api/volumes": {
+        const bookId = url.searchParams.get("book_id") || "";
+        if (!bookId) throw new TomatoApiError(-2, "请先指定 book_id");
+        const volumes = await fetchRemoteVolumes(bookId);
+        json(res, 200, {
+          volumes: volumes.map((v) => ({
+            volume_id: String(v.volume_id ?? ""),
+            volume_name: volNameOf(v),
+            item_count: Number(v.item_count ?? 0),
+            can_delete: Boolean(v.can_delete),
+          })),
+        });
+        return;
+      }
+
+      // 卷对照：本地卷名 → 番茄卷（dry_run=1 只出计划，不改番茄端；否则改名 / 认领）
+      case "POST /api/volumes/sync": {
+        const body = await readBody(req);
+        const bookId = String(body.book_id || "");
+        const names = Array.isArray(body.volume_names) ? body.volume_names : [];
+        if (!bookId) throw new TomatoApiError(-2, "缺少 book_id");
+        if (!names.length) throw new TomatoApiError(-2, "没有本地卷可对照（书目录里没有卷.md，也没有卷目录）");
+        const r = await syncVolumes(bookId, names, { dryRun: Boolean(body.dry_run) });
+        logApp(`[volumes] ${body.dry_run ? "预检" : "同步"} 本地卷=${names.join(",")} → ${r.volumes.map((v) => `${v.local}=>${v.volume_id || "(待建)"}(${v.action})`).join(" ")}`);
+        json(res, 200, { volumes: r.volumes, actions: r.actions });
+        return;
+      }
+
+      // 章节列表：指定 volume_id 只取该卷；不指定则逐卷取全书（番茄没有「全部卷」的可靠取值）
       case "GET /api/chapters": {
         const bookId = url.searchParams.get("book_id") || "";
         if (!bookId) throw new TomatoApiError(-2, "请先指定 book_id");
-        const items = [];
-        for (let pageIndex = 0; pageIndex < 50; pageIndex++) {
-          const data = await apiGet("/api/author/chapter/chapter_list/v1", {
-            book_id: bookId,
-            volume_id: url.searchParams.get("volume_id") || "",
-            page_index: pageIndex,
-            page_count: 100,
-            status: 0,
-            must_have_correction_feedback: 0,
-            need_correction_feedback_num: 1,
-            sort: "",
-          });
-          const list = Array.isArray(data) ? data : data?.item_list ?? [];
-          items.push(...list);
-          if (list.length < 100) break; // 不满一页 = 已取完
+        const volumeId = url.searchParams.get("volume_id") || "";
+        if (volumeId) {
+          json(res, 200, await fetchChapters(bookId, volumeId));
+          return;
         }
-        json(res, 200, items);
+        const vols = await fetchRemoteVolumes(bookId);
+        const items = await fetchAllChapters(bookId);
+        // 没有卷的书（volume_list 为空）也要能列章
+        if (!vols.length && !items.length) json(res, 200, await fetchChapters(bookId, ""));
+        else json(res, 200, items);
         return;
       }
 
@@ -918,43 +1526,116 @@ const server = http.createServer(async (req, res) => {
           if (useAi !== 1 && useAi !== 2) throw new TomatoApiError(-2, "use_ai 只能是 1（是）或 2（否）");
         }
         const checkType = body.check_type === "full" ? "full" : "base";
-        const results = [];
-        // 更新模式：item 带 item_id（番茄端已存在该章）→ 跳过 new_article，直接对已有章节 publish_article
-        // （与官网编辑器「保存并发布」同一路径）；卷名从 volume_list 解析（懒加载一次）
-        let volNameMap = null;
-        const volNameOf = async (volumeId) => {
-          if (!volNameMap) {
-            const data = await apiGet("/api/author/volume/volume_list/v1", { book_id: bookId });
-            const list = Array.isArray(data) ? data : data?.volume_list ?? [];
-            volNameMap = new Map(list.map((v) => [String(v.volume_id), v.volume_name]));
+        // stream=1 → 逐章回推进度（NDJSON，一行一个事件），界面据此实时更新状态与日志窗口；不带 stream 时行为不变（一次性回 results）
+        const streaming = Boolean(body.stream);
+        if (streaming)
+          res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+        const emit = (o) => {
+          if (!streaming) return;
+          try {
+            res.write(JSON.stringify(o) + "\n");
+          } catch {
+            /* 客户端已断开 */
           }
-          return volNameMap.get(String(volumeId)) || "";
         };
+        const results = [];
+        // 卷模式：item 可带 local_volume（本地卷名；空 = 不带卷，落番茄默认卷）。
+        // 先把本地卷和番茄卷对照好（同名复用 / 按位置认领并改名成本地卷名 / 缺的建卷），再逐卷发布
+        const localNames = [];
         for (const it of items) {
+          const n = String(it.local_volume ?? "").trim();
+          if (n && !localNames.includes(n)) localNames.push(n);
+        }
+        const volPlan = localNames.length ? await syncVolumes(bookId, localNames) : null;
+        if (volPlan) {
+          for (const a of volPlan.actions) {
+            logApp(`[publish] ${a}`);
+            emit({ type: "log", text: a });
+          }
+          logApp(`[publish] 卷对照：${volPlan.volumes.map((v) => `${v.local}→${v.volume_id || "(待建)"}`).join(" ")}`);
+        }
+        const volNameById = new Map();
+        for (const v of await fetchRemoteVolumes(bookId)) volNameById.set(String(v.volume_id), volNameOf(v));
+        // 番茄没有「移动章节 / 插中间」的接口：新章先按「卷内标题」找番茄已有章节，找到就走更新路径，避免重复追加
+        // 标题匹配两级：① 完全同名 ② 去掉「第N章」前缀后同名 —— 第二级保证「发布标题连续编号」改动后仍能对上旧章节
+        const remoteByVol = new Map(); // volume_id → { exact: Map(标题 → item_id), core: Map(去序号标题 → item_id) }
+        const remoteTitleIndex = async (volumeId) => {
+          if (!remoteByVol.has(volumeId)) {
+            const exact = new Map();
+            const core = new Map();
+            for (const c of await fetchChapters(bookId, volumeId)) {
+              const t = String(c.title ?? c.chapter_title ?? "").trim();
+              const id = String(c.item_id ?? c.id ?? "");
+              if (!t || !id) continue;
+              if (!exact.has(t)) exact.set(t, id);
+              const k = chapterCore(t);
+              if (k && !core.has(k)) core.set(k, id);
+            }
+            remoteByVol.set(volumeId, { exact, core });
+          }
+          return remoteByVol.get(volumeId);
+        };
+        const pushResult = (idx, r) => {
+          results.push(r);
+          emit({ type: "chap", i: idx, total: items.length, title: r.title, ok: r.ok, updated: r.updated, volume: r.volume, error: r.error, checks: r.checks });
+        };
+        emit({ type: "start", total: items.length });
+        for (let idx = 0; idx < items.length; idx++) {
+          const it = items[idx];
+          emit({ type: "chap", i: idx, total: items.length, title: it.title, action: "start" });
           try {
             let itemId, volumeId, volumeName;
+            let updated = Boolean(it.item_id);
+            const lv = String(it.local_volume ?? "").trim();
+            const planned = lv && volPlan ? volPlan.map.get(lv) : null;
+            let target = planned;
+            if (planned && !planned.volume_id) {
+              // 番茄上还没有这个卷 → 此刻建卷（紧接着就发它的第一章，避免同时存在多个空卷）
+              const vid = await ensureRemoteVolume(bookId, lv);
+              target = { volume_id: vid, volume_name: lv, action: "已新建" };
+              volPlan.map.set(lv, target);
+              volNameById.set(vid, lv);
+              emit({ type: "log", text: `已新建番茄卷「${lv}」` });
+            }
+            if (lv && target && !target.volume_id)
+              throw new TomatoApiError(-1, `卷「${lv}」在番茄上还没建好，无法发布《${it.title}》`);
             if (it.item_id) {
               itemId = String(it.item_id);
-              volumeId = String(it.volume_id ?? "");
+              volumeId = String(it.volume_id ?? "") || String(target?.volume_id ?? "");
               if (!volumeId) throw new TomatoApiError(-2, `章节「${it.title}」缺少 volume_id，无法更新`);
-              volumeName = String(it.volume_name ?? "") || (await volNameOf(volumeId));
+              volumeName = String(it.volume_name ?? "") || volNameById.get(volumeId) || target?.volume_name || "";
             } else {
-              const draft = await apiPost("/api/author/article/new_article/v0/", {
-                book_id: bookId,
-                need_reuse: 0,
-              });
-              itemId = String(draft.item_id);
-              volumeId = String(draft?.volume_id ?? "");
-              volumeName = "正文";
-              try {
-                let vd = draft?.volume_data;
-                if (typeof vd === "string") vd = JSON.parse(vd);
-                if (Array.isArray(vd)) {
-                  const hit = vd.find((v) => String(v.volume_id) === volumeId) ?? vd[0];
-                  if (hit?.volume_name) volumeName = hit.volume_name;
+              const title = String(it.title ?? "").trim();
+              const hit = target?.volume_id ? await remoteTitleIndex(target.volume_id) : null;
+              const known = hit ? (hit.exact.get(title) ?? (chapterCore(title) ? hit.core.get(chapterCore(title)) : "") ?? "") : "";
+              if (known) {
+                itemId = known;
+                updated = true;
+                volumeId = target.volume_id;
+                volumeName = target.volume_name;
+              } else {
+                const draft = await apiPost("/api/author/article/new_article/v0/", {
+                  book_id: bookId,
+                  need_reuse: 0,
+                });
+                itemId = String(draft.item_id);
+                volumeId = String(draft?.volume_id ?? "");
+                volumeName = "正文";
+                try {
+                  let vd = draft?.volume_data;
+                  if (typeof vd === "string") vd = JSON.parse(vd);
+                  if (Array.isArray(vd)) {
+                    const hit2 = vd.find((v) => String(v.volume_id) === volumeId) ?? vd[0];
+                    if (hit2?.volume_name) volumeName = hit2.volume_name;
+                  }
+                } catch {
+                  /* 用默认名 */
                 }
-              } catch {
-                /* 用默认名 */
+                // 指定了本地卷 → 发布到对照出来的番茄卷（编辑器里换卷也是这两个字段）
+                if (target?.volume_id) {
+                  volumeId = target.volume_id;
+                  volumeName = target.volume_name;
+                }
               }
             }
             const contentHtml = mdToHtml(String(it.content || ""));
@@ -975,11 +1656,12 @@ const server = http.createServer(async (req, res) => {
               }
               const risks = checks.full?.risks;
               if (Array.isArray(risks) && risks.length > 0) {
-                results.push({
+                pushResult(idx, {
                   title: it.title,
                   ok: false,
                   itemId,
-                  updated: Boolean(it.item_id),
+                  updated,
+                  volume: volumeName,
                   checks,
                   error: `全面检测发现 ${risks.length} 处风险内容（中止发布）：${risks.map((r) => r.text).join(" / ")}`,
                 });
@@ -1004,13 +1686,17 @@ const server = http.createServer(async (req, res) => {
               has_chapter_ad: "false",
               chapter_ad_types: "",
             });
-            results.push({ title: it.title, ok: true, itemId, updated: Boolean(it.item_id), checks, data });
+            logApp(`[publish] ${updated ? "更新" : "新建"}《${String(it.title || "").trim()}》卷=${volumeName || volumeId} item_id=${itemId}`);
+            pushResult(idx, { title: it.title, ok: true, itemId, updated, volume: volumeName, volumeId, checks, data });
           } catch (e) {
-            results.push({ title: it.title, ok: false, error: e.message, code: e.code });
+            pushResult(idx, { title: it.title, ok: false, error: e.message, code: e.code });
             break; // 遇错即停，避免半截状态
           }
         }
-        json(res, 200, { results });
+        if (streaming) {
+          emit({ type: "done", results });
+          res.end();
+        } else json(res, 200, { results });
         return;
       }
 
@@ -1018,6 +1704,15 @@ const server = http.createServer(async (req, res) => {
         json(res, 404, { error: `未知路由：${req.method} ${url.pathname}` });
     }
   } catch (e) {
+    // 流式响应（发布进度）已经开了头 → 错误也只能按 NDJSON 事件回，不能再写一遍 JSON 响应
+    if (res.headersSent) {
+      logApp(`[error] 流式响应中断：${e.message}`);
+      try {
+        res.write(JSON.stringify({ type: "error", error: e.message, code: e.code ?? null }) + "\n");
+        res.end();
+      } catch { /* 客户端已断开 */ }
+      return;
+    }
     const status = e instanceof TomatoApiError && e.code === -2 ? 400 : 500;
     json(res, status, { error: e.message, code: e.code ?? null });
   }

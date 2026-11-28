@@ -14,7 +14,10 @@
     "build:mac": "bun build --compile --target=bun-darwin-arm64 build/entry.mjs --outfile dist/tomato-writer-mac",
     "build:app:win": "electron-builder --win portable --x64",
     "build:app:linux": "electron-builder --linux AppImage",
-    "build:app:mac": "electron-builder --mac"
+    "build:app:mac": "electron-builder --mac dmg --arm64 --x64",
+    "build:app:mac:local": "electron-builder --mac zip --arm64",
+    "build:app:mac:legacy": "electron-builder --mac dmg --x64 --config.electronVersion=32.3.3 --config.mac.artifactName='tomato-writer-app-${version}-x64-macos10.15.dmg'",
+    "build:app:mac:legacy:local": "electron-builder --mac zip --x64 --config.electronVersion=32.3.3 --config.mac.artifactName='tomato-writer-app-${version}-x64-macos10.15.zip'"
   },
   "dependencies": {
     "puppeteer-core": "^24.0.0"
@@ -53,6 +56,20 @@
       ],
       "category": "Utility",
       "artifactName": "tomato-writer-app-${version}.AppImage"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "artifactName": "tomato-writer-app-${version}-${arch}.${ext}",
+      "identity": null
     }
   }
 }
